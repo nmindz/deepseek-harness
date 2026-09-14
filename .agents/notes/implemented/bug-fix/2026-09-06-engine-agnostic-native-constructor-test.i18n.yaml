@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-09-06-engine-agnostic-native-constructor-test.md
+2026-09-06-engine-agnostic-native-constructor-test.md: ca1c6ddbfe49f8ff460454511f4ee57b13d2291c
+2026-09-06-engine-agnostic-native-constructor-test.zh.md: ae18d45a6f41143081515b4d88d5ac6f810e6a91
