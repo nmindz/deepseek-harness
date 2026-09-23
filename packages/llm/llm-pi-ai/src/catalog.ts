@@ -192,15 +192,57 @@ export function catalogProviderIds(): readonly string[] {
   return getBuiltinProviders()
 }
 
+/** One id a provider already serves, and the installed entry supplying its capabilities. */
+interface ProvisionalModel {
+  /** Model id the provider accepts on the wire. */
+  id: string
+  /** Installed catalog id whose entry this model copies. */
+  inherits: string
+  /** Display name for selectors. */
+  name: string
+}
+
+/**
+ * Ids a provider serves ahead of the pinned pi-ai catalog, each copying one
+ * installed entry whole. An id qualifies only while the provider publishes it
+ * with the specs of the entry it inherits, because copying is unconditional:
+ * a route profile declares neither `cost` nor a withheld compat field, so
+ * inheritance is the only way these models reach the pricing and dispatch
+ * behavior their released twin already has. An id the installed catalog ships
+ * wins, so a pi-ai upgrade retires its entry without a code change.
+ *
+ * TODO: drop an entry once a pi-ai release ships its model.
+ */
+const PROVISIONAL_MODELS: Readonly<Record<string, readonly ProvisionalModel[]>> = {
+  anthropic: [{ id: 'claude-opus-5-5', inherits: 'claude-opus-5', name: 'Claude Opus 5.5' }],
+}
+
 /**
  * The installed catalog models for one route, indexed by model id.
  * @param provider - provider route key.
- * @returns catalog models by id; empty for a route pi-ai does not ship.
+ * @returns catalog models by id, including provisional entries; empty for a route pi-ai does not ship.
  */
 export function catalogModels(provider: string): Map<string, Model<Api>> {
   if (!catalogProviders().has(provider)) return new Map()
   const models = getBuiltinModels(provider as BuiltinProvider) as Model<Api>[]
-  return new Map(models.map(model => [model.id, model]))
+  const catalog = new Map(models.map(model => [model.id, model]))
+  for (const provisional of PROVISIONAL_MODELS[provider] ?? []) {
+    // Retires this entry on the pi-ai upgrade that ships the id, whose real
+    // record must not be overwritten by the one it was provisionally copied from.
+    /* v8 ignore next -- unreachable until that upgrade lands, which is when this entry is deleted. */
+    if (catalog.has(provisional.id)) continue
+    const inherited = catalog.get(provisional.inherits)
+    // An upgrade that retires the inherited id would leave this model with no
+    // capabilities at all, which reads downstream as a non-reasoning model on
+    // the route's default capacities rather than as a stale table.
+    /* v8 ignore next 4 -- unreachable while the pinned pi-ai ships each inherited id, which the catalog spec asserts. */
+    if (inherited === undefined) {
+      throw new Error(`the installed pi-ai catalog for "${provider}" no longer ships`
+        + ` "${provisional.inherits}", which "${provisional.id}" inherits`)
+    }
+    catalog.set(provisional.id, { ...inherited, id: provisional.id, name: provisional.name })
+  }
+  return catalog
 }
 
 /**

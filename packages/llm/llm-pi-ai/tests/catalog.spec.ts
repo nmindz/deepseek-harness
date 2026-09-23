@@ -10,6 +10,7 @@ import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream'
 import type { Api, Model, OpenAICompletionsCompat, Provider } from '@earendil-works/pi-ai'
+import { catalogModels } from '../src/catalog.ts'
 import { resolveProfiles } from '../src/config.ts'
 import { createModels, createProvider, getSupportedThinkingLevels } from '../src/models.ts'
 import { buildProvider, supportedProtocols } from '../src/provider.ts'
@@ -1249,5 +1250,41 @@ describe('configurable-provider directory', () => {
       settingsPath: ['providers', 'openai-codex'],
       declared: false,
     })
+  })
+})
+
+describe('provisional catalog models', () => {
+  it('serves an id the pinned catalog lacks with its inherited twin’s capabilities', () => {
+    const catalog = catalogModels('anthropic')
+    const inherited = catalog.get('claude-opus-5')
+    const provisional = catalog.get('claude-opus-5-5')
+    if (inherited === undefined) throw new Error('the installed catalog ships no claude-opus-5')
+    if (provisional === undefined) throw new Error('the catalog omits the provisional claude-opus-5-5')
+
+    // Identity is the model's own; a route profile can declare neither cost
+    // nor a withheld compat field, so both must arrive by inheritance.
+    expect(provisional.id).toBe('claude-opus-5-5')
+    expect(provisional.name).toBe('Claude Opus 5.5')
+    expect(provisional.cost).toEqual(inherited.cost)
+    expect(provisional.compat).toEqual(inherited.compat)
+    const { id: _id, name: _name, ...rest } = provisional
+    const { id: _inheritedId, name: _inheritedName, ...inheritedRest } = inherited
+    expect(rest).toEqual(inheritedRest)
+  })
+
+  it('resolves reasoning and the long context for a profile that lists the id alone', async () => {
+    const inherited = catalogModels('anthropic').get('claude-opus-5')
+    if (inherited === undefined) throw new Error('the installed catalog ships no claude-opus-5')
+    const ctx = await harness({
+      providers: { anthropic: { apiKeyEnv: KEY_ENV, models: [{ id: 'claude-opus-5-5' }] } },
+    })
+
+    // An id the installed catalog does not describe resolves as a
+    // non-reasoning model on the route's default capacities; inheritance is
+    // what carries the efforts and the long context here.
+    const info = await ctx.llm.resolveModelInfo('anthropic', 'claude-opus-5-5')
+    expect(info.reasoning?.efforts.map(effort => effort.id))
+      .toEqual(getSupportedThinkingLevels(inherited).filter(level => level !== 'off'))
+    expect(info.context).toEqual({ contextWindow: inherited.contextWindow })
   })
 })
