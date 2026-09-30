@@ -8,7 +8,8 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SessionProjectionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
 import {
   type ArchivedFilter,
-  deriveFlat, deriveGroups, deriveSearchResults, orderByRecency, owningGroupKey, owningParentFolder,
+  applyDirection, deriveFlat, deriveGroups, deriveSearchResults, ORDER_DIRECTION_DEFAULTS, orderByRecency,
+  orderByTitle, orderWorkspacesByRecency, orderWorkspacesByTitle, owningGroupKey, owningParentFolder,
   pinCurrentBlank, reconcileManualOrder, sessionMemberIds, visibleSessionIds, workspaceLabel, UNGROUPED_KEY,
 } from '../src/client/tree.ts'
 import { createWorkspaceViewStore } from '../src/client/stores.ts'
@@ -100,6 +101,72 @@ describe('Session ordering', () => {
       [sid('unknown'), sid('tie-b'), sid('older'), sid('tie-a')],
       summaries,
     )).toEqual([sid('tie-a'), sid('tie-b'), sid('older')])
+  })
+
+  it('applies a direction to a newest-first recency order without mutating the input', () => {
+    const order = [sid('newest'), sid('middle'), sid('oldest')]
+    expect(applyDirection(order, 'desc')).toEqual(order)
+    expect(applyDirection(order, 'desc')).not.toBe(order)
+    expect(applyDirection(order, 'asc')).toEqual([sid('oldest'), sid('middle'), sid('newest')])
+    expect(order).toEqual([sid('newest'), sid('middle'), sid('oldest')])
+    expect(ORDER_DIRECTION_DEFAULTS).toEqual({ updated: 'desc', name: 'asc' })
+  })
+
+  it('orders known members by title with numeric, case-insensitive collation and empty titles last', () => {
+    const untitled = summary('untitled', 5)
+    delete untitled.title
+    const summaries = list(
+      { ...summary('ten', 1), title: 'item 10' },
+      { ...summary('two', 2), title: 'item 2' },
+      { ...summary('upper', 3), title: 'Beta' },
+      { ...summary('lower', 4), title: 'alpha' },
+      untitled,
+      { ...summary('blank', 6), blank: true },
+    ).byId
+    const members = [sid('unknown'), sid('ten'), sid('untitled'), sid('two'), sid('blank'), sid('upper'), sid('lower')]
+    expect(orderByTitle(members, summaries, 'asc'))
+      .toEqual([sid('lower'), sid('upper'), sid('two'), sid('ten'), sid('blank'), sid('untitled')])
+    expect(orderByTitle(members, summaries, 'desc'))
+      .toEqual([sid('untitled'), sid('blank'), sid('ten'), sid('two'), sid('upper'), sid('lower')])
+  })
+
+  it('breaks equal titles by Session identity in both directions', () => {
+    const summaries = list(
+      { ...summary('b', 1), title: 'Same' },
+      { ...summary('a', 2), title: 'same' },
+      { ...summary('c', 3), title: 'SAME' },
+    ).byId
+    expect(orderByTitle([sid('c'), sid('b'), sid('a')], summaries, 'asc')).toEqual([sid('a'), sid('b'), sid('c')])
+    expect(orderByTitle([sid('c'), sid('b'), sid('a')], summaries, 'desc')).toEqual([sid('c'), sid('b'), sid('a')])
+  })
+
+  it('orders Workspaces by displayed title with identity as the tie-break', () => {
+    const workspaces = [
+      workspace('w-10', [], 'Project 10'),
+      workspace('w-b', [], 'same'),
+      workspace('w-2', [], 'project 2'),
+      workspace('w-c', [], 'SAME'),
+      workspace('w-a', [], 'Same'),
+    ]
+    expect(orderWorkspacesByTitle(workspaces, 'asc').map(w => w.workspaceId))
+      .toEqual([wid('w-2'), wid('w-10'), wid('w-a'), wid('w-b'), wid('w-c')])
+    expect(orderWorkspacesByTitle(workspaces, 'desc').map(w => w.workspaceId))
+      .toEqual([wid('w-c'), wid('w-b'), wid('w-a'), wid('w-10'), wid('w-2')])
+    expect(workspaces.map(w => w.workspaceId)).toEqual([wid('w-10'), wid('w-b'), wid('w-2'), wid('w-c'), wid('w-a')])
+  })
+
+  it('orders Workspaces by their newest known Session, falling back to the Workspace instant', () => {
+    const summaries = list(summary('old', 10), summary('fresh', 40), summary('mid', 20)).byId
+    const stale = { ...workspace('stale', ['old']), updatedAt: '2026-01-01T00:00:00.000Z' }
+    const active = { ...workspace('active', ['old', 'fresh']), updatedAt: '2026-01-01T00:00:00.000Z' }
+    const pendingSummary = { ...workspace('pending', ['unknown']), updatedAt: '1970-01-01T00:00:00.030Z' }
+    const empty = { ...workspace('empty', []), updatedAt: '1970-01-01T00:00:00.030Z' }
+    const workspaces = [stale, pendingSummary, active, empty]
+    expect(orderWorkspacesByRecency(workspaces, summaries, 'desc').map(w => w.workspaceId))
+      .toEqual([wid('active'), wid('pending'), wid('empty'), wid('stale')])
+    expect(orderWorkspacesByRecency(workspaces, summaries, 'asc').map(w => w.workspaceId))
+      .toEqual([wid('stale'), wid('pending'), wid('empty'), wid('active')])
+    expect(workspaces.map(w => w.workspaceId)).toEqual([wid('stale'), wid('pending'), wid('active'), wid('empty')])
   })
 
   it('orders each partition strictly by Session recency, independent of pin-array order', () => {
@@ -798,6 +865,32 @@ describe('createWorkspaceViewStore', () => {
     const store = createWorkspaceViewStore().create()
     store.actions.syncSessionOrders({ alpha: ['one'] })
     expect(store.getSnapshot().sessionOrderByAccount).toEqual({})
+  })
+
+  it('starts without a direction record and remembers one direction per computed mode', () => {
+    const store = createWorkspaceViewStore().create()
+    expect(store.getSnapshot().orderDirection).toBeUndefined()
+    store.actions.setOrderDirection('name', 'desc')
+    expect(store.getSnapshot().orderDirection).toEqual({ name: 'desc' })
+    store.actions.setOrderDirection('updated', 'asc')
+    expect(store.getSnapshot().orderDirection).toEqual({ name: 'desc', updated: 'asc' })
+    store.actions.setOrderDirection('name', 'asc')
+    expect(store.getSnapshot().orderDirection).toEqual({ name: 'asc', updated: 'asc' })
+    store.actions.setOrderBy('manual', {})
+    store.actions.setOrderBy('name', {})
+    expect(store.getSnapshot()).toMatchObject({ orderBy: 'name', orderDirection: { name: 'asc', updated: 'asc' } })
+  })
+
+  it('selects Name without saved positions and snapshots every account when a Name-mode drag selects Manual', () => {
+    const store = createWorkspaceViewStore().create()
+    store.actions.setSessionOrder('alpha', ['two', 'one'], {})
+    store.actions.setOrderBy('name', {})
+    expect(store.getSnapshot()).toMatchObject({ orderBy: 'name', sessionOrderByAccount: {} })
+    store.actions.setSessionOrder('alpha', ['one', 'two'], { alpha: ['two', 'one'], beta: ['three'] })
+    expect(store.getSnapshot()).toMatchObject({
+      orderBy: 'manual',
+      sessionOrderByAccount: { alpha: ['one', 'two'], beta: ['three'] },
+    })
   })
 
   it('saves Pin positions and complete accounts without changing the selected ordering mode', () => {

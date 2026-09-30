@@ -461,8 +461,10 @@ describe('WorkspaceBrowser', () => {
     expect(screen.getByText('分组方式')).toBeTruthy() // the menu heading label
     expect(screen.getAllByRole('separator')).toHaveLength(2)
     expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
-      '按工作区', '按工作区树', '单列表', '手动排序', '最近更新', '隐藏已归档', '全部对话（显示已归档）', '仅显示已归档',
+      '按工作区', '按工作区树', '单列表', '手动排序', '最近更新', '按名称', '隐藏已归档', '全部对话（显示已归档）', '仅显示已归档',
     ])
+    // Manual has no direction, so the Direction section is absent.
+    expect(screen.queryByText('排序方向')).toBeNull()
     expect(screen.getByRole('menuitem', { name: '按工作区' }).querySelector('svg')).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: '手动排序' }).querySelector('svg')).toBeTruthy()
     fireEvent.click(screen.getByRole('menuitem', { name: '单列表' }))
@@ -2561,5 +2563,224 @@ describe('Workspace tree grouping', () => {
     fireEvent.dragEnd(alpha)
     expect(b.props.insertWorkspaceBefore).toHaveBeenCalledOnce()
     expect(b.props.insertWorkspaceBefore).toHaveBeenCalledWith(wid('alpha'), wid('gamma'))
+  })
+})
+
+describe('WorkspaceBrowser computed ordering', () => {
+  /** Rendered rows, top to bottom, as their stable row keys. */
+  const rowKeys = (): string[] => [...document.querySelectorAll('[data-row-key]')]
+    .map(element => element.getAttribute('data-row-key') ?? '')
+    .filter(key => key.startsWith('workspace:') || key.startsWith('session:'))
+  const pickView = (name: string): void => {
+    fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
+    fireEvent.click(screen.getByRole('menuitem', { name }))
+  }
+  const openView = (): void => { fireEvent.click(screen.getByRole('button', { name: '视图选项' })) }
+  const menuTexts = (): (string | null)[] => screen.getAllByRole('menuitem').map(item => item.textContent)
+  // The Menu marks a selected row with its trailing check glyph.
+  const checkedTexts = (): (string | null)[] => screen.getAllByRole('menuitem')
+    .filter(item => item.querySelector('svg[class*="check"]') !== null)
+    .map(item => item.textContent)
+  const titled = (id: string, title: string, updatedAt: number): SessionSummary => ({ ...summary(id, updatedAt), title })
+
+  it('shows the Direction section only for computed modes and checks the active direction', () => {
+    const b = mount()
+    openView()
+    expect(menuTexts()).not.toContain('升序')
+    fireEvent.click(screen.getByRole('menuitem', { name: '最近更新' }))
+    openView()
+    expect(screen.getByText('排序方向')).toBeTruthy()
+    expect(screen.getAllByRole('separator')).toHaveLength(3)
+    expect(menuTexts()).toEqual([
+      '按工作区', '按工作区树', '单列表', '手动排序', '最近更新', '按名称', '升序', '降序', '隐藏已归档', '全部对话（显示已归档）', '仅显示已归档',
+    ])
+    expect(screen.getByRole('menuitem', { name: '升序' }).querySelector('svg')).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: '按名称' }).querySelector('svg')).toBeTruthy()
+    expect(checkedTexts()).toEqual(['按工作区', '最近更新', '降序', '隐藏已归档'])
+    fireEvent.click(screen.getByRole('menuitem', { name: '按名称' }))
+    expect(b.store.getSnapshot().orderBy).toBe('name')
+    openView()
+    expect(checkedTexts()).toEqual(['按工作区', '按名称', '升序', '隐藏已归档'])
+    fireEvent.click(screen.getByRole('menuitem', { name: '手动排序' }))
+    openView()
+    expect(screen.queryByText('排序方向')).toBeNull()
+    expect(screen.getAllByRole('separator')).toHaveLength(2)
+  })
+
+  it('orders groups and their Sessions by name, keeps Ungrouped last, and flips with the direction', () => {
+    const b = mount({
+      useSessions: hook(sessionState([
+        titled('b-2', 'item 2', 1), titled('b-10', 'item 10', 2), titled('b-a', 'Alpha', 3),
+        titled('z-s', 'zeta', 4), titled('loose-b', 'Bravo', 5), titled('loose-a', 'alpha', 6),
+      ])),
+      useWorkspaces: hook(workspaceState([
+        workspace('zulu', ['z-s'], 'Zulu'),
+        workspace('beta', ['b-2', 'b-10', 'b-a'], 'beta'),
+        workspace('alpha', [], 'alpha'),
+      ])),
+    })
+    fireEvent.click(screen.getByText('beta'))
+    fireEvent.click(screen.getByText('未分组'))
+    // Manual: Host group order; unsaved member positions fall back to recency.
+    expect(rowKeys()).toEqual([
+      'workspace:zulu', 'workspace:beta', 'session:b-a', 'session:b-10', 'session:b-2', 'workspace:alpha',
+      `workspace:${UNGROUPED_KEY}`, 'session:loose-a', 'session:loose-b',
+    ])
+
+    pickView('按名称')
+    expect(rowKeys()).toEqual([
+      'workspace:alpha', 'workspace:beta', 'session:b-a', 'session:b-2', 'session:b-10', 'workspace:zulu',
+      `workspace:${UNGROUPED_KEY}`, 'session:loose-a', 'session:loose-b',
+    ])
+
+    pickView('降序')
+    expect(b.store.getSnapshot().orderDirection).toEqual({ name: 'desc' })
+    expect(rowKeys()).toEqual([
+      'workspace:zulu', 'workspace:beta', 'session:b-10', 'session:b-2', 'session:b-a', 'workspace:alpha',
+      `workspace:${UNGROUPED_KEY}`, 'session:loose-b', 'session:loose-a',
+    ])
+
+    // Ascending again restores A→Z at both levels.
+    pickView('升序')
+    expect(rowKeys()[0]).toBe('workspace:alpha')
+    expect(rowKeys().at(-2)).toBe('session:loose-a')
+  })
+
+  it('orders groups by their newest Session under Last updated and remembers the direction per mode', () => {
+    const b = mount({
+      useSessions: hook(sessionState([
+        summary('stale-s', 10), summary('fresh-s', 40), summary('mid-s', 20), summary('loose', 100),
+      ])),
+      useWorkspaces: hook(workspaceState([
+        workspace('stale', ['stale-s']),
+        workspace('empty', []),
+        workspace('active', ['mid-s', 'fresh-s']),
+      ])),
+    })
+    fireEvent.click(screen.getByText('active'))
+    expect(rowKeys()).toEqual([
+      'workspace:stale', 'workspace:empty', 'workspace:active', 'session:fresh-s', 'session:mid-s',
+      `workspace:${UNGROUPED_KEY}`,
+    ])
+
+    pickView('最近更新')
+    // Workspace instants (2026) outrank every fixture Session epoch, so the
+    // Session-less Workspace ranks by its own last mutation; Ungrouped trails.
+    expect(rowKeys()).toEqual([
+      'workspace:empty', 'workspace:active', 'session:fresh-s', 'session:mid-s', 'workspace:stale',
+      `workspace:${UNGROUPED_KEY}`,
+    ])
+
+    pickView('升序')
+    expect(b.store.getSnapshot().orderDirection).toEqual({ updated: 'asc' })
+    expect(rowKeys()).toEqual([
+      'workspace:stale', 'workspace:active', 'session:mid-s', 'session:fresh-s', 'workspace:empty',
+      `workspace:${UNGROUPED_KEY}`,
+    ])
+
+    // Name keeps its own default direction; returning to Last updated restores Ascending.
+    pickView('按名称')
+    openView()
+    expect(checkedTexts()).toContain('升序')
+    fireEvent.click(screen.getByRole('menuitem', { name: '降序' }))
+    pickView('最近更新')
+    openView()
+    expect(checkedTexts()).toContain('升序')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(b.store.getSnapshot().orderDirection).toEqual({ updated: 'asc', name: 'desc' })
+
+    // The persisted blob rehydrates both directions on remount.
+    b.view.unmount()
+    const restored = mount({
+      useSessions: hook(sessionState([summary('stale-s', 10), summary('fresh-s', 40), summary('mid-s', 20)])),
+      useWorkspaces: hook(workspaceState([workspace('stale', ['stale-s']), workspace('active', ['fresh-s', 'mid-s'])])),
+    })
+    expect(restored.store.getSnapshot()).toMatchObject({ orderBy: 'updated', orderDirection: { updated: 'asc', name: 'desc' } })
+    // The persisted expansion keeps 'active' open; oldest-first applies at both levels.
+    expect(rowKeys()).toEqual(['workspace:stale', 'workspace:active', 'session:mid-s', 'session:fresh-s'])
+  })
+
+  it('reads a persisted view without a direction record as the mode defaults', () => {
+    localStorage.setItem('dsh.workspace.view.v5', JSON.stringify({
+      groupBy: 'workspace', orderBy: 'updated', groupExpansion: { alpha: true }, sessionOrderByAccount: {},
+    }))
+    const b = mount({
+      useSessions: hook(sessionState([summary('old', 1), summary('new', 2)])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['old', 'new'])])),
+    })
+    expect(b.store.getSnapshot().orderDirection).toBeUndefined()
+    expect(rowKeys()).toEqual(['workspace:alpha', 'session:new', 'session:old'])
+    openView()
+    expect(checkedTexts()).toContain('降序')
+  })
+
+  it('applies name order and direction to the flat list while pins and the blank row keep leading', () => {
+    const b = mount({
+      useSessions: hook(sessionState([
+        titled('c', 'Charlie', 1), titled('a', 'alpha', 2), { ...summary('blank', 3), blank: true }, titled('p', 'zulu-pin', 4),
+        titled('untitled', '', 5),
+      ], { main: sid('blank') })),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['c', 'a', 'blank', 'p', 'untitled'])], [], [sid('p')])),
+    })
+    pickView('单列表')
+    pickView('按名称')
+    expect(rowKeys()).toEqual(['session:blank', 'session:p', 'session:a', 'session:c', 'session:untitled'])
+    pickView('降序')
+    expect(rowKeys()).toEqual(['session:blank', 'session:p', 'session:untitled', 'session:c', 'session:a'])
+    expect(b.store.getSnapshot()).toMatchObject({ orderBy: 'name', orderDirection: { name: 'desc' } })
+  })
+
+  it('makes Workspace rows inert to drag under a computed mode while a Session drag still selects Manual', () => {
+    const b = mount({
+      useSessions: hook(sessionState([titled('one', 'one', 3), titled('two', 'two', 2)])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['one', 'two']), workspace('beta', [])])),
+    })
+    fireEvent.click(screen.getByText('alpha'))
+    const alphaRow = (): HTMLElement => screen.getByText('alpha').closest('[role="treeitem"]') as HTMLElement
+    expect(alphaRow().draggable).toBe(true)
+
+    pickView('按名称')
+    expect(alphaRow().draggable).toBe(false)
+    expect(screen.getByText('beta').closest('[role="treeitem"]')?.getAttribute('draggable')).toBe('false')
+    // No drag state starts, so hovering another section never draws a marker or reorders.
+    fireEvent.dragStart(alphaRow(), { dataTransfer: dragData() })
+    const betaSection = screen.getByText('beta').closest('[role="treeitem"]')?.parentElement as HTMLElement
+    fireDrag(betaSection, 'dragOver', 100)
+    expect(betaSection.className).not.toContain('workspaceDrop')
+    fireDrag(betaSection, 'drop', 100)
+    fireEvent.dragEnd(alphaRow())
+    expect(b.props.insertWorkspaceBefore).not.toHaveBeenCalled()
+
+    const [one, two] = screen.getAllByRole('treeitem')
+      .filter(row => row.getAttribute('data-row-key')?.startsWith('session:')) as [HTMLElement, HTMLElement]
+    expect(one.getAttribute('data-row-key')).toBe('session:one')
+    expect(one.draggable).toBe(true)
+    two.getBoundingClientRect = () => ({
+      top: 150, bottom: 184, left: 0, right: 200, width: 200, height: 34, x: 0, y: 150, toJSON: () => ({}),
+    })
+    fireEvent.dragStart(one, { dataTransfer: dragData() })
+    fireDrag(two, 'drop', 180)
+    expect(b.store.getSnapshot()).toMatchObject({ orderBy: 'manual', sessionOrderByAccount: { alpha: ['two', 'one'] } })
+    expect(alphaRow().draggable).toBe(true)
+  })
+
+  it('sorts sibling Workspaces under each parent in Workspace Tree mode', () => {
+    createWorkspaceViewStore().create().actions.setGroupBy('workspace-tree')
+    const b = mount({
+      useSessions: hook(sessionState([summary('root-s', 1)])),
+      useWorkspaces: hook(workspaceState([
+        { ...workspace('root', ['root-s'], 'root'), path: '/git' },
+        { ...workspace('zeta', [], 'zeta'), path: '/git/zeta' },
+        { ...workspace('other', [], 'Other') },
+        { ...workspace('alpha', [], 'alpha'), path: '/git/alpha' },
+      ])),
+    })
+    // The ancestor starts expanded: its children precede its own Session row.
+    expect(rowKeys()).toEqual(['workspace:root', 'workspace:zeta', 'workspace:alpha', 'session:root-s', 'workspace:other'])
+    pickView('按名称')
+    expect(rowKeys()).toEqual(['workspace:other', 'workspace:root', 'workspace:alpha', 'workspace:zeta', 'session:root-s'])
+    pickView('降序')
+    expect(rowKeys()).toEqual(['workspace:root', 'workspace:zeta', 'workspace:alpha', 'session:root-s', 'workspace:other'])
+    expect(b.store.getSnapshot().orderDirection).toEqual({ name: 'desc' })
   })
 })

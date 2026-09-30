@@ -1,6 +1,7 @@
 /**
  * The workspace browser's viewing store: the session-list grouping mode,
- * persisted across reloads. Module level exports the factory only (a
+ * order mode, and per-mode sort direction, persisted across reloads. Module
+ * level exports the factory only (a
  * module-level handle would pin the store identity across plugin reloads);
  * register() receives the factory and the browser derives its PropsStore
  * share from the return type.
@@ -8,20 +9,23 @@
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-store'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { reconcileManualOrder, type ArchivedFilter, type SessionRowState } from './tree.ts'
+import {
+  reconcileManualOrder,
+  type ArchivedFilter, type ComputedOrderBy, type SessionOrderBy, type SessionRowState, type SortDirection,
+} from './tree.ts'
 
 /** Browser-local order account for the hierarchy-free flat Session list. */
 export const FLAT_SESSION_ORDER_KEY = '__flat_session_order__'
 
 /** Session-list grouping mode: sibling Workspace sections, a Workspace tree, or one flat list. */
 export type SessionGroupBy = 'workspace' | 'workspace-tree' | 'flat'
-/** Session order: saved manual positions or current recency. */
-export type SessionOrderBy = 'manual' | 'updated'
 
 /** Workspace browser viewing state persisted across surface remounts and reloads. */
 type WorkspaceViewState = {
   groupBy: SessionGroupBy
   orderBy: SessionOrderBy
+  /** Per-mode direction; omitted in pre-direction v5 snapshots and read as the mode defaults. */
+  orderDirection?: Partial<Record<ComputedOrderBy, SortDirection>>
   /** Explicit group expansion keyed by Workspace identity, including descendants in tree mode. */
   groupExpansion: Record<string, boolean>
   /** Saved manual order per Workspace group plus the browser-local flat-list account. */
@@ -47,6 +51,7 @@ type WorkspaceViewActions = {
     mode: SessionOrderBy,
     initialOrders: Readonly<Record<string, readonly string[]>>,
   ) => void
+  setOrderDirection: (draft: WorkspaceViewState, mode: ComputedOrderBy, direction: SortDirection) => void
   setGroupExpanded: (draft: WorkspaceViewState, key: string, expanded: boolean) => void
   retainAccountKeys: (draft: WorkspaceViewState, workspaceKeys: readonly string[]) => void
   syncSessionOrders: (
@@ -96,6 +101,9 @@ export function createWorkspaceViewStore(): EngineStoreHandle<WorkspaceViewState
         d.sessionOrderByAccount = mode === 'manual' ? copySessionOrders(initialOrders) : {}
         d.orderBy = mode
       },
+      setOrderDirection: (d, mode: ComputedOrderBy, direction: SortDirection) => {
+        d.orderDirection = { ...d.orderDirection, [mode]: direction }
+      },
       setGroupExpanded: (d, key: string, expanded: boolean) => { d.groupExpansion[key] = expanded },
       retainAccountKeys: (d, workspaceKeys: readonly string[]) => {
         const retained = new Set(workspaceKeys)
@@ -112,7 +120,7 @@ export function createWorkspaceViewStore(): EngineStoreHandle<WorkspaceViewState
         Object.assign(d.sessionOrderByAccount, copySessionOrders(orders))
       },
       setSessionOrder: (d, accountKey, order, initialOrders) => {
-        if (d.orderBy === 'updated') d.sessionOrderByAccount = copySessionOrders(initialOrders)
+        if (d.orderBy !== 'manual') d.sessionOrderByAccount = copySessionOrders(initialOrders)
         else Object.assign(d.sessionOrderByAccount, copySessionOrders(initialOrders))
         d.orderBy = 'manual'
         d.sessionOrderByAccount[accountKey] = [...order]

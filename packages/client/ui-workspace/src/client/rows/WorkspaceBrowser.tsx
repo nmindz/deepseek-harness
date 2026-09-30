@@ -18,10 +18,11 @@ import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useStat
 import clsx from 'clsx'
 import {
   Button, IconArchiveCheckOutlineRegular, IconArchiveOffOutlineRegular, IconArchiveOutlineRegular,
-  IconChevronsUpDownOutlineRegular, IconClockOutlineRegular, IconCloseFillRegular,
-  IconFlatListOutlineRegular, IconFolderCloseRegular, IconProjectAddOutlineRegular,
-  IconQueueOutlineRegular, IconSearchOutlineRegular, IconSlidersTwoOutlineRegular,
-  IconWorkspaceTreeOutlineRegular, Menu, Modal, Toast, Tooltip,
+  IconChevronDownOutlineRegular, IconChevronsUpDownOutlineRegular, IconChevronUpOutlineRegular,
+  IconClockOutlineRegular, IconCloseFillRegular, IconFlatListOutlineRegular, IconFolderCloseRegular,
+  IconListPenOutlineRegular, IconProjectAddOutlineRegular, IconQueueOutlineRegular,
+  IconSearchOutlineRegular, IconSlidersTwoOutlineRegular, IconWorkspaceTreeOutlineRegular,
+  Menu, Modal, Toast, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   SessionListState, SessionSearchResultItem,
@@ -30,10 +31,14 @@ import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-
 import { workspaceDisplayTitle } from '@deepseek-ai/dsh-api-workspace-controller/default-workspace'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
+import { assertNever } from '@deepseek-ai/dsh-util-values'
 import type { WorkspaceBrowserProps } from '../contract/slots.ts'
-import type { ArchivedFilter, GroupNode, SessionNode, SessionOrderBy, SessionRowState } from '../tree.ts'
+import type {
+  ArchivedFilter, ComputedOrderBy, GroupNode, SessionNode, SessionOrderBy, SessionRowState, SortDirection,
+} from '../tree.ts'
 import {
-  deriveFlat, deriveGroups, deriveSearchResults, orderByRecency, owningGroupKey, owningParentFolder,
+  applyDirection, deriveFlat, deriveGroups, deriveSearchResults, ORDER_DIRECTION_DEFAULTS, orderByRecency,
+  orderByTitle, orderWorkspacesByRecency, orderWorkspacesByTitle, owningGroupKey, owningParentFolder,
   pinCurrentBlank, reconcileManualOrder, sessionMemberIds, UNGROUPED_KEY,
 } from '../tree.ts'
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './Rows.tsx'
@@ -69,6 +74,42 @@ function collapsedSessionRows(sessions: readonly SessionNode[], limit = COLLAPSE
   return { rows, hiddenCount: sessions.length - rows.length }
 }
 
+/** Known account members in the selected computed order and direction. */
+function orderComputed(
+  memberIds: readonly SessionId[],
+  summaries: SessionListState['byId'],
+  mode: ComputedOrderBy,
+  direction: SortDirection,
+): SessionId[] {
+  switch (mode) {
+    case 'updated':
+      return applyDirection(orderByRecency(memberIds, summaries), direction)
+    case 'name':
+      return orderByTitle(memberIds, summaries, direction)
+    /* v8 ignore next 2 -- closed-union backstop; only reached if the mode is forged */
+    default:
+      return assertNever(mode)
+  }
+}
+
+/** Workspace groups in the selected computed order and direction; Manual keeps the Host order. */
+function orderWorkspaceGroups(
+  workspaces: readonly WorkspaceView[],
+  summaries: SessionListState['byId'],
+  mode: ComputedOrderBy,
+  direction: SortDirection,
+): WorkspaceView[] {
+  switch (mode) {
+    case 'updated':
+      return orderWorkspacesByRecency(workspaces, summaries, direction)
+    case 'name':
+      return orderWorkspacesByTitle(workspaces, direction)
+    /* v8 ignore next 2 -- closed-union backstop; only reached if the mode is forged */
+    default:
+      return assertNever(mode)
+  }
+}
+
 /** Keep controlled input and RPC payload inside the session.search wire contract. */
 function sanitizeSearchQuery(value: string): string {
   const withoutNul = value.replaceAll('\0', '')
@@ -102,17 +143,27 @@ function useNativeDragAcceptance(active: boolean): void {
   }, [active])
 }
 
-/** Grouping, ordering, and archived-filter menu; own open state so it resets with the wide chrome. */
-function ViewOptionsMenu({ groupBy, orderBy, archivedFilter, onGroupPick, onOrderPick, onArchivedFilterPick, t }: {
+/**
+ * Grouping, ordering, direction, and archived-filter menu; own open state so
+ * it resets with the wide chrome. The Direction section exists only while a
+ * computed order mode is selected: Manual has no direction.
+ */
+function ViewOptionsMenu({
+  groupBy, orderBy, orderDirection, archivedFilter, onGroupPick, onOrderPick, onDirectionPick, onArchivedFilterPick, t,
+}: {
   groupBy: SessionGroupBy
   orderBy: SessionOrderBy
+  /** Direction of the selected computed mode; ignored under Manual. */
+  orderDirection: SortDirection
   archivedFilter: ArchivedFilter
   onGroupPick: (mode: SessionGroupBy) => void
   onOrderPick: (mode: SessionOrderBy) => void
+  onDirectionPick: (direction: SortDirection) => void
   onArchivedFilterPick: (filter: ArchivedFilter) => void
   t: WorkspaceBrowserProps['t']
 }) {
   const [open, setOpen] = useState(false)
+  const computed = orderBy !== 'manual'
   return (
     <Menu
       open={open}
@@ -126,6 +177,15 @@ function ViewOptionsMenu({ groupBy, orderBy, archivedFilter, onGroupPick, onOrde
         { type: 'label' as const, id: 'order-by', text: t('orderBy.label') },
         { id: 'manual', label: t('orderBy.manual'), icon: <IconChevronsUpDownOutlineRegular /> },
         { id: 'updated', label: t('orderBy.updated'), icon: <IconClockOutlineRegular /> },
+        { id: 'name', label: t('orderBy.name'), icon: <IconListPenOutlineRegular /> },
+        ...(computed
+          ? [
+            { type: 'separator' as const, id: 'direction-separator' },
+            { type: 'label' as const, id: 'direction', text: t('direction.label') },
+            { id: 'direction-asc', label: t('direction.asc'), icon: <IconChevronUpOutlineRegular /> },
+            { id: 'direction-desc', label: t('direction.desc'), icon: <IconChevronDownOutlineRegular /> },
+          ]
+          : []),
         { type: 'separator' as const, id: 'archived-filter-separator' },
         { type: 'label' as const, id: 'filter-by', text: t('filterBy.label') },
         { id: 'hide-archived', label: t('viewOptions.hideArchived'), icon: <IconArchiveOffOutlineRegular /> },
@@ -135,11 +195,14 @@ function ViewOptionsMenu({ groupBy, orderBy, archivedFilter, onGroupPick, onOrde
       selectedIds={[
         groupBy,
         orderBy,
+        ...(computed ? [`direction-${orderDirection}`] : []),
         { default: 'hide-archived', show: 'show-archived', only: 'only-archived' }[archivedFilter],
       ]}
       onSelect={(id) => {
         if (id === 'workspace' || id === 'workspace-tree' || id === 'flat') onGroupPick(id)
-        else if (id === 'manual' || id === 'updated') onOrderPick(id)
+        else if (id === 'manual' || id === 'updated' || id === 'name') onOrderPick(id)
+        else if (id === 'direction-asc') onDirectionPick('asc')
+        else if (id === 'direction-desc') onDirectionPick('desc')
         else if (id === 'hide-archived') onArchivedFilterPick('default')
         else if (id === 'show-archived') onArchivedFilterPick('show')
         else if (id === 'only-archived') onArchivedFilterPick('only')
@@ -239,6 +302,8 @@ type SessionTreeProps = Pick<
   animationResetKey: string
   /** Nest Workspaces under their nearest registered ancestors. */
   nestWorkspaces: boolean
+  /** Workspace rows accept drag only while the Host order is what the list shows (Manual). */
+  workspaceDragEnabled: boolean
   /** Explicit persisted group expansion, including descendants in tree mode. */
   groupExpansion: Readonly<Record<string, boolean>>
   /** Persist one Workspace group's expansion. */
@@ -285,7 +350,7 @@ function SessionTree({
   onRenameRequest, onDeleteRequest, onSessionRenameRequest,
   renderSlot,
   insertWorkspaceBefore,
-  nestWorkspaces, groupExpansion, setGroupExpanded,
+  nestWorkspaces, workspaceDragEnabled, groupExpansion, setGroupExpanded,
   setSessionOrder, home, t,
   revealSessionId, onSessionRevealed, shortcuts,
 }: SessionTreeProps) {
@@ -427,7 +492,7 @@ function SessionTree({
     const workspaceMarker = workspaceId !== undefined && workspaceDrag?.over?.id === workspaceId
       ? workspaceDrag.over.half
       : null
-    const workspaceDragProps = workspaceId === undefined ? undefined : {
+    const workspaceDragProps = workspaceId === undefined || !workspaceDragEnabled ? undefined : {
       start: () => {
         workspaceDropCommitted.current = false
         setWorkspaceDrag({ workspaceId, over: null })
@@ -892,6 +957,11 @@ export function WorkspaceBrowser({
   const directoryFlowAvailable = useDirectoryFlow(occupied => occupied)
   const groupBy = useStore(s => s.groupBy)
   const orderBy = useStore(s => s.orderBy)
+  // Persisted view blobs written before the direction existed rehydrate
+  // without the field; each computed mode reads its default direction.
+  const orderDirection = useStore(s => orderBy === 'manual'
+    ? ORDER_DIRECTION_DEFAULTS.updated
+    : s.orderDirection?.[orderBy] ?? ORDER_DIRECTION_DEFAULTS[orderBy])
   // Persisted view blobs written before the archived filter existed rehydrate
   // without the field; they read as the default hide-archived view.
   const archivedFilter = useStore(s => s.archivedFilter ?? 'default')
@@ -926,37 +996,32 @@ export function WorkspaceBrowser({
     [orderState, archivedFilter],
   )
   const flatMemberIds = useMemo(() => sessionMemberIds(list), [list])
-  const orderedWorkspaces = useMemo(() => workspaces.map((workspace) => {
-    const memberIds = workspace.sessionIds
-    const baseOrder = orderBy === 'updated'
-      ? orderByRecency(memberIds, list.byId)
-      : reconcileManualOrder(memberIds, sessionOrderByAccount[workspace.workspaceId], list.byId, orderState)
-    return {
+  // One account's complete display order: the selected mode and direction
+  // decide the base order, and the selected blank Session keeps its first slot.
+  const orderAccount = (memberIds: readonly SessionId[], accountKey: string): SessionId[] => {
+    const baseOrder = orderBy === 'manual'
+      ? reconcileManualOrder(memberIds, sessionOrderByAccount[accountKey], list.byId, orderState)
+      : orderComputed(memberIds, list.byId, orderBy, orderDirection)
+    return pinCurrentBlank(
+      baseOrder,
+      currentBlank !== undefined && memberIds.includes(currentBlank) ? currentBlank : undefined,
+    )
+  }
+  const orderedWorkspaces = useMemo(() => {
+    const withMembers = workspaces.map(workspace => ({
       ...workspace,
-      sessionIds: pinCurrentBlank(
-        baseOrder,
-        currentBlank !== undefined && memberIds.includes(currentBlank) ? currentBlank : undefined,
-      ),
-    }
-  }), [currentBlank, list.byId, orderBy, orderState, sessionOrderByAccount, workspaces])
-  const orderedUngroupedSessionIds = useMemo(() => {
-    const baseOrder = orderBy === 'updated'
-      ? orderByRecency(ungroupedMemberIds, list.byId)
-      : reconcileManualOrder(ungroupedMemberIds, sessionOrderByAccount[UNGROUPED_KEY], list.byId, orderState)
-    return pinCurrentBlank(
-      baseOrder,
-      currentBlank !== undefined && ungroupedMemberIds.includes(currentBlank) ? currentBlank : undefined,
-    )
-  }, [currentBlank, list.byId, orderBy, orderState, sessionOrderByAccount, ungroupedMemberIds])
-  const orderedFlatSessionIds = useMemo(() => {
-    const baseOrder = orderBy === 'updated'
-      ? orderByRecency(flatMemberIds, list.byId)
-      : reconcileManualOrder(flatMemberIds, sessionOrderByAccount[FLAT_SESSION_ORDER_KEY], list.byId, orderState)
-    return pinCurrentBlank(
-      baseOrder,
-      currentBlank !== undefined && flatMemberIds.includes(currentBlank) ? currentBlank : undefined,
-    )
-  }, [currentBlank, flatMemberIds, list.byId, orderBy, orderState, sessionOrderByAccount])
+      sessionIds: orderAccount(workspace.sessionIds, workspace.workspaceId),
+    }))
+    return orderBy === 'manual' ? withMembers : orderWorkspaceGroups(withMembers, list.byId, orderBy, orderDirection)
+  }, [currentBlank, list.byId, orderBy, orderDirection, orderState, sessionOrderByAccount, workspaces])
+  const orderedUngroupedSessionIds = useMemo(
+    () => orderAccount(ungroupedMemberIds, UNGROUPED_KEY),
+    [currentBlank, list.byId, orderBy, orderDirection, orderState, sessionOrderByAccount, ungroupedMemberIds],
+  )
+  const orderedFlatSessionIds = useMemo(
+    () => orderAccount(flatMemberIds, FLAT_SESSION_ORDER_KEY),
+    [currentBlank, flatMemberIds, list.byId, orderBy, orderDirection, orderState, sessionOrderByAccount],
+  )
   const activeSessionOrders = useMemo<Readonly<Record<string, readonly SessionId[]>>>(() => Object.fromEntries([
     ...orderedWorkspaces.map(workspace => [workspace.workspaceId, workspace.sessionIds] as const),
     [UNGROUPED_KEY, orderedUngroupedSessionIds] as const,
@@ -1009,6 +1074,8 @@ export function WorkspaceBrowser({
   const saveSessionOrder = (accountKey: string, order: readonly string[]): void => {
     actions.setSessionOrder(accountKey, order, activeSessionOrders)
   }
+  // A mode, direction, or filter change replaces the list without row motion.
+  const animationResetKey = `${groupBy}/${orderBy}/${orderDirection}/${archivedFilter}`
   // The query outlives the tree and the input (both wide-only) so collapsing
   // does not silently drop an in-progress filter.
   const [query, setQuery] = useState('')
@@ -1274,9 +1341,14 @@ export function WorkspaceBrowser({
             <ViewOptionsMenu
               groupBy={groupBy}
               orderBy={orderBy}
+              orderDirection={orderDirection}
               archivedFilter={archivedFilter}
               onGroupPick={actions.setGroupBy}
               onOrderPick={(mode) => { actions.setOrderBy(mode, activeSessionOrders) }}
+              onDirectionPick={(direction) => {
+                /* v8 ignore next -- the menu offers direction rows only while a computed mode is selected. */
+                if (orderBy !== 'manual') actions.setOrderDirection(orderBy, direction)
+              }}
               onArchivedFilterPick={actions.setArchivedFilter}
               t={t}
             />
@@ -1367,7 +1439,7 @@ export function WorkspaceBrowser({
                 rowState={rowState}
                 onLeaveArchivedOnly={leaveArchivedOnly}
                 workspaceReady={workspaceReady}
-                animationResetKey={`${groupBy}/${orderBy}/${archivedFilter}`}
+                animationResetKey={animationResetKey}
                 useSessionStatus={useSessionStatus}
                 open={guardedOpen}
                 onSessionRenameRequest={requestSessionRename}
@@ -1390,7 +1462,8 @@ export function WorkspaceBrowser({
                 ungroupedSessionIds={orderedUngroupedSessionIds}
                 workspaceReady={workspaceReady}
                 nestWorkspaces={groupBy === 'workspace-tree'}
-                animationResetKey={`${groupBy}/${orderBy}/${archivedFilter}`}
+                workspaceDragEnabled={orderBy === 'manual'}
+                animationResetKey={animationResetKey}
                 groupExpansion={groupExpansion}
                 setGroupExpanded={actions.setGroupExpanded}
                 setSessionOrder={saveSessionOrder}

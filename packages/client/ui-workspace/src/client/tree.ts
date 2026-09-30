@@ -61,8 +61,17 @@ export interface SessionNode {
   updatedAt: number
 }
 
-/** Session order selected by the Workspace browser. */
-export type SessionOrderBy = 'manual' | 'updated'
+/** Session and Workspace order selected by the Workspace browser. */
+export type SessionOrderBy = 'manual' | 'updated' | 'name'
+/** Sort direction for the computed order modes. */
+export type SortDirection = 'asc' | 'desc'
+/** The computed order modes; Manual has no direction. */
+export type ComputedOrderBy = Exclude<SessionOrderBy, 'manual'>
+/** Direction each computed mode uses until the user picks one. */
+export const ORDER_DIRECTION_DEFAULTS: Readonly<Record<ComputedOrderBy, SortDirection>> = {
+  updated: 'desc',
+  name: 'asc',
+}
 
 /** One workspace group section: header row facts + visible top-level session rows. */
 export interface GroupNode {
@@ -154,6 +163,102 @@ export function orderByRecency(
       return a.id < b.id ? -1 : 1
     })
     .map(member => member.id)
+}
+
+/**
+ * Apply a direction to a recency order produced newest-first.
+ * @param order - members newest first.
+ * @param direction - `desc` keeps newest first; `asc` places the oldest first.
+ * @returns a copy in the requested direction.
+ */
+export function applyDirection<T>(order: readonly T[], direction: SortDirection): T[] {
+  const copy = [...order]
+  return direction === 'asc' ? copy.reverse() : copy
+}
+
+/** Base-sensitivity, numeric-aware title comparison shared by Session and Workspace name order. */
+const titleCollator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true })
+
+/**
+ * Compare two displayed titles: empty titles trail named ones, then the
+ * collator decides, then the caller's identity tie-break.
+ */
+function compareTitles(a: string, b: string): number {
+  if (a === '' || b === '') return a === b ? 0 : a === '' ? 1 : -1
+  return titleCollator.compare(a, b)
+}
+
+/**
+ * Project known account members by displayed title.
+ * @param sessionIds - authoritative account membership.
+ * @param summaries - current Session summaries; members without a summary are omitted until it arrives.
+ * @param direction - `asc` places A before Z with empty titles last; `desc` reverses that order.
+ * @returns known members in title order, with Session identity as the deterministic tie-break.
+ */
+export function orderByTitle(
+  sessionIds: readonly SessionId[],
+  summaries: SessionListState['byId'],
+  direction: SortDirection,
+): SessionId[] {
+  const ascending = sessionIds.flatMap((id) => {
+    const summary = summaries[id]
+    if (summary === undefined) return []
+    return [{ id, title: sessionTitle(summary) }]
+  })
+    .sort((a, b) => {
+      const byTitle = compareTitles(a.title, b.title)
+      if (byTitle !== 0) return byTitle
+      return a.id < b.id ? -1 : 1
+    })
+    .map(member => member.id)
+  return direction === 'asc' ? ascending : ascending.reverse()
+}
+
+/**
+ * Order Workspaces by displayed title; the caller localizes titles first.
+ * @param workspaces - Workspaces carrying their displayed titles.
+ * @param direction - `asc` places A before Z; `desc` reverses that order.
+ * @returns a sorted copy with Workspace identity as the deterministic tie-break.
+ */
+export function orderWorkspacesByTitle(
+  workspaces: readonly WorkspaceView[],
+  direction: SortDirection,
+): WorkspaceView[] {
+  const ascending = [...workspaces].sort((a, b) => {
+    const byTitle = compareTitles(a.title, b.title)
+    if (byTitle !== 0) return byTitle
+    return a.workspaceId < b.workspaceId ? -1 : 1
+  })
+  return direction === 'asc' ? ascending : ascending.reverse()
+}
+
+/**
+ * Order Workspaces by their newest accounted Session, falling back to the
+ * Workspace's own last-mutation instant when no accounted Session is known.
+ * @param workspaces - Workspaces in Host order (kept for equal ranks).
+ * @param summaries - current Session summaries.
+ * @param direction - `desc` places the most recently active Workspace first.
+ * @returns a stably sorted copy.
+ */
+export function orderWorkspacesByRecency(
+  workspaces: readonly WorkspaceView[],
+  summaries: SessionListState['byId'],
+  direction: SortDirection,
+): WorkspaceView[] {
+  const ranked = workspaces.map((workspace, index) => {
+    let rank = -Infinity
+    for (const id of workspace.sessionIds) {
+      const updatedAt = summaries[id]?.updatedAt
+      if (updatedAt !== undefined && updatedAt > rank) rank = updatedAt
+    }
+    if (rank === -Infinity) rank = Date.parse(workspace.updatedAt)
+    return { workspace, rank, index }
+  })
+  ranked.sort((a, b) => {
+    if (a.rank !== b.rank) return direction === 'desc' ? b.rank - a.rank : a.rank - b.rank
+    return a.index - b.index
+  })
+  return ranked.map(entry => entry.workspace)
 }
 
 /**
