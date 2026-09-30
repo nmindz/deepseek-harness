@@ -175,6 +175,11 @@ describe('WorkspaceController commands', () => {
     vi.spyOn(ctx.workspaceRegistry, 'unpinSession').mockRejectedValueOnce(unpinFailure)
     await expect(controller.unpinSession({ sessionId: SessionId('session') }))
       .rejects.toBe(unpinFailure)
+
+    const archiveWorkspaceFailure = new Error('workspace archive storage failed')
+    vi.spyOn(ctx.workspaceRegistry, 'archiveWorkspace').mockRejectedValueOnce(archiveWorkspaceFailure)
+    await expect(controller.archiveWorkspace({ workspaceId: created.workspace.workspaceId }))
+      .rejects.toBe(archiveWorkspaceFailure)
   })
 
   it('resolves queued Workspace identities when their operation starts', async () => {
@@ -300,6 +305,53 @@ describe('WorkspaceController commands', () => {
     await expect(controller.unpinSession({ sessionId: session.id }))
       .resolves.toEqual({ pinnedSessionIds: [] })
   })
+
+  it('archives only known Workspaces, refuses active Sessions with their work, and unarchives idempotently', async () => {
+    const { controller, ctx, root } = await harness()
+    const created = await controller.create({ path: stageDir(root, 'archivable') })
+    const workspaceId = created.workspace.workspaceId
+    const workspace = ctx.workspaceRegistry.get(workspaceId)
+    if (workspace === undefined) throw new Error('fixture Workspace disappeared')
+    const idle = ctx.sessions.create(SessionId('idle-member'), { meta: { cwd: created.workspace.path } })
+    const busy = ctx.sessions.create(SessionId('busy-member'), { meta: { cwd: created.workspace.path } })
+    await workspace.attachSession(idle.id)
+    await workspace.attachSession(busy.id)
+    const accounted = [...workspace.sessionIds]
+
+    await expect(controller.archiveWorkspace({ workspaceId: 'missing' as WorkspaceId }))
+      .rejects.toMatchObject({ code: 'workspace/not-found', details: { workspaceId: 'missing' } })
+
+    // One active accounted Session refuses the whole Workspace, naming that
+    // Session and its work in account order; nothing is written.
+    const activity = [{ kind: 'probe' as const }, { kind: 'probe-items' as const, items: [{ id: 'item-1', label: 'build' }] }]
+    const stopReporting = ctx.on('workspace/session-activity', async ({ sessionId }, next) =>
+      sessionId === busy.id ? [...activity, ...(await next())] : next())
+    await expect(controller.archiveWorkspace({ workspaceId })).rejects.toMatchObject({
+      code: 'workspace/workspace-active',
+      details: { workspaceId, sessions: [{ sessionId: busy.id, activity }] },
+    })
+    expect([...ctx.workspaceRegistry.archivedWorkspaceIds]).toEqual([])
+    // Asking to stop the work archives the Workspace and stops only the active Session.
+    const stops: string[] = []
+    const stopListening = ctx.on('workspace/session-stop', ({ sessionId }) => { stops.push(String(sessionId)) })
+    await expect(controller.archiveWorkspace({ workspaceId, stopActivity: true }))
+      .resolves.toEqual({ archivedWorkspaceIds: [workspaceId] })
+    expect(stops).toEqual([String(busy.id)])
+    stopListening()
+    stopReporting()
+    // The Workspace row and its Sessions stay in place; only the archived set changed.
+    expect(ctx.workspaceRegistry.list().map(entry => entry.id)).toEqual([workspaceId])
+    expect([...workspace.sessionIds]).toEqual(accounted)
+    expect([...ctx.workspaceRegistry.archivedSessionIds]).toEqual([])
+
+    await expect(controller.unarchiveWorkspace({ workspaceId }))
+      .resolves.toEqual({ archivedWorkspaceIds: [] })
+    // Unarchive is idempotent: an id that is not archived is not an error.
+    await expect(controller.unarchiveWorkspace({ workspaceId }))
+      .resolves.toEqual({ archivedWorkspaceIds: [] })
+    await expect(controller.unarchiveWorkspace({ workspaceId: 'missing' as WorkspaceId }))
+      .resolves.toEqual({ archivedWorkspaceIds: [] })
+  })
 })
 
 describe('WorkspaceController follow', () => {
@@ -322,24 +374,34 @@ describe('WorkspaceController follow', () => {
           workspaceIds: ['missing'],
           archivedSessionIds: [],
           pinnedSessionIds: [],
+          archivedWorkspaceIds: [],
         },
       })
     }).toThrow('references missing Workspace "missing"')
   })
 
-  it('starts a fresh feed with existing pins and follows their removal', async () => {
+  it('starts a fresh feed with existing pins and archived Workspaces and follows their removal', async () => {
     const { controller, ctx, root } = await harness()
     const session = ctx.sessions.create(SessionId('already-pinned'), { meta: { cwd: root } })
     await controller.pinSession({ sessionId: session.id })
+    const archived = await controller.create({ path: stageDir(root, 'already-archived') })
+    await controller.archiveWorkspace({ workspaceId: archived.workspace.workspaceId })
     const feed = new WorkspaceFeed(ctx)
     const abort = new AbortController()
     const iterator = feed.follow(abort.signal)[Symbol.asyncIterator]()
     try {
       await expect(nextFrame(iterator)).resolves.toMatchObject({
-        type: 'baseline', value: { pinnedSessionIds: [session.id] },
+        type: 'baseline',
+        value: {
+          items: [{ workspaceId: archived.workspace.workspaceId }],
+          pinnedSessionIds: [session.id],
+          archivedWorkspaceIds: [archived.workspace.workspaceId],
+        },
       })
       await controller.unpinSession({ sessionId: session.id })
       await expect(nextFrame(iterator)).resolves.toEqual({ type: 'pinned', pinnedSessionIds: [] })
+      await controller.unarchiveWorkspace({ workspaceId: archived.workspace.workspaceId })
+      await expect(nextFrame(iterator)).resolves.toEqual({ type: 'archivedWorkspaces', archivedWorkspaceIds: [] })
     } finally {
       abort.abort()
       await iterator.return?.()
@@ -352,7 +414,7 @@ describe('WorkspaceController follow', () => {
     const iterator = controller.follow(abort.signal)[Symbol.asyncIterator]()
     await expect(nextFrame(iterator)).resolves.toEqual({
       type: 'baseline',
-      value: { items: [], archivedSessionIds: [], pinnedSessionIds: [] },
+      value: { items: [], archivedSessionIds: [], pinnedSessionIds: [], archivedWorkspaceIds: [] },
     })
 
     const first = await controller.create({ path: stageDir(root, 'first') })
@@ -403,6 +465,17 @@ describe('WorkspaceController follow', () => {
     await controller.unpinSession({ sessionId: session.id })
     await expect(nextFrame(iterator)).resolves.toEqual({
       type: 'pinned', pinnedSessionIds: [],
+    })
+    // Archiving a Workspace publishes only the archived-Workspace set: its row
+    // and order slot are untouched, so no upsert or order frame accompanies it.
+    await controller.archiveWorkspace({ workspaceId: second.workspace.workspaceId })
+    await expect(nextFrame(iterator)).resolves.toEqual({
+      type: 'archivedWorkspaces', archivedWorkspaceIds: [second.workspace.workspaceId],
+    })
+    // Unarchive rides the same complete-set increment: no new frame type.
+    await controller.unarchiveWorkspace({ workspaceId: second.workspace.workspaceId })
+    await expect(nextFrame(iterator)).resolves.toEqual({
+      type: 'archivedWorkspaces', archivedWorkspaceIds: [],
     })
     await controller.delete({ workspaceId: second.workspace.workspaceId })
     await expect(nextFrame(iterator)).resolves.toEqual({

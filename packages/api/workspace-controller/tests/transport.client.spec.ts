@@ -60,6 +60,7 @@ function accepts(overrides: Partial<WorkspaceFollowSink> = {}): WorkspaceFollowS
     replaceOrder: ignore,
     replaceArchived: ignore,
     replacePinned: ignore,
+    replaceArchivedWorkspaces: ignore,
     ...overrides,
   }
 }
@@ -156,6 +157,7 @@ describe('Workspace state stream', () => {
       { type: 'order', workspaceIds: [view.workspaceId] },
       { type: 'archived', archivedSessionIds: [sid('session-one')] },
       { type: 'pinned', pinnedSessionIds: [sid('session-two')] },
+      { type: 'archivedWorkspaces', archivedWorkspaceIds: [view.workspaceId] },
     ]
     mock.stream(FOLLOW, openStream([opening, ...increments]))
     const replaceBaseline = vi.fn<WorkspaceFollowSink['replaceBaseline']>()
@@ -164,14 +166,17 @@ describe('Workspace state stream', () => {
     const replaceOrder = vi.fn<WorkspaceFollowSink['replaceOrder']>()
     const replaceArchived = vi.fn<WorkspaceFollowSink['replaceArchived']>()
     const replacePinned = vi.fn<WorkspaceFollowSink['replacePinned']>()
+    const replaceArchivedWorkspaces = vi.fn<WorkspaceFollowSink['replaceArchivedWorkspaces']>()
     const stream = createWorkspaceStateStream(remote, {
-      accept: accepts({ replaceBaseline, upsertView, removeView, replaceOrder, replaceArchived, replacePinned }),
+      accept: accepts({
+        replaceBaseline, upsertView, removeView, replaceOrder, replaceArchived, replacePinned, replaceArchivedWorkspaces,
+      }),
       failed: vi.fn(),
     })
 
     stream.start()
     stream.start()
-    await vi.waitFor(() => { expect(replacePinned).toHaveBeenCalledOnce() })
+    await vi.waitFor(() => { expect(replaceArchivedWorkspaces).toHaveBeenCalledOnce() })
 
     expect(replaceBaseline).toHaveBeenCalledWith(opening.value)
     expect(upsertView).toHaveBeenCalledWith(view)
@@ -179,6 +184,7 @@ describe('Workspace state stream', () => {
     expect(replaceOrder).toHaveBeenCalledWith([view.workspaceId])
     expect(replaceArchived).toHaveBeenCalledWith(['session-one'])
     expect(replacePinned).toHaveBeenCalledWith(['session-two'])
+    expect(replaceArchivedWorkspaces).toHaveBeenCalledWith(['one'])
     await stream.dispose()
     expect(streamStates(mock)).toEqual(['cancelled'])
   })
@@ -314,7 +320,7 @@ describe('WorkspaceController', () => {
   it('returns no Workspace when startup is ineligible without changing the list', async ({ mock, start }) => {
     const { remote, client } = await gatewayClient(mock, start)
     const model = new ClientWorkspaceModel(remote.workspace)
-    model.replaceBaseline({ items: [], archivedSessionIds: [], pinnedSessionIds: [] })
+    model.replaceBaseline({ items: [], archivedSessionIds: [], pinnedSessionIds: [], archivedWorkspaceIds: [] })
     const controller = new WorkspaceController(client.ctx, model)
     const before = model.getSnapshot()
     mock.remote.workspace.initializeDefault.mockResolvedValueOnce({ ok: true, value: undefined })
@@ -325,7 +331,9 @@ describe('WorkspaceController', () => {
   it('publishes the model source and exposes successful Workspace commands', async ({ mock, start }) => {
     const { remote, client } = await gatewayClient(mock, start)
     const model = new ClientWorkspaceModel(remote.workspace)
-    model.replaceBaseline({ items: [workspace('one')], archivedSessionIds: [], pinnedSessionIds: [] })
+    model.replaceBaseline({
+      items: [workspace('one')], archivedSessionIds: [], pinnedSessionIds: [], archivedWorkspaceIds: [],
+    })
     const controller = new WorkspaceController(client.ctx, model)
 
     expect(controller.list).toBe(model)
@@ -341,6 +349,10 @@ describe('WorkspaceController', () => {
     await expect(controller.unarchiveSession(sid('session'))).resolves.toBeUndefined()
     await expect(controller.pinSession(sid('session'))).resolves.toBeUndefined()
     await expect(controller.unpinSession(sid('session'))).resolves.toBeUndefined()
+    await expect(controller.archiveWorkspace(wid('one'))).resolves.toBeUndefined()
+    expect(model.getSnapshot().archivedWorkspaceIds).toEqual(['one'])
+    await expect(controller.unarchiveWorkspace(wid('one'))).resolves.toBeUndefined()
+    expect(model.getSnapshot().archivedWorkspaceIds).toEqual([])
     await expect(controller.delete(wid('one'))).resolves.toBeUndefined()
     // Each command crosses the wire as one positional request object.
     expect(mock.log.requests('workspace/create')).toEqual([{ path: '/work/created' }])
@@ -352,6 +364,9 @@ describe('WorkspaceController', () => {
     expect(mock.log.requests('workspace/unarchiveSession')).toEqual([{ sessionId: 'session' }])
     expect(mock.log.requests('workspace/pinSession')).toEqual([{ sessionId: 'session' }])
     expect(mock.log.requests('workspace/unpinSession')).toEqual([{ sessionId: 'session' }])
+    await expect(controller.archiveWorkspace(wid('one'), { stopActivity: true })).resolves.toBeUndefined()
+    expect(mock.log.requests('workspace/archiveWorkspace')).toEqual([{ workspaceId: 'one' }, { workspaceId: 'one', stopActivity: true }])
+    expect(mock.log.requests('workspace/unarchiveWorkspace')).toEqual([{ workspaceId: 'one' }])
     expect(mock.log.requests('workspace/delete')).toEqual([{ workspaceId: 'one' }])
   })
 
@@ -392,6 +407,27 @@ describe('WorkspaceController', () => {
     mock.remote.workspace.unarchiveSession.mockResolvedValueOnce(err(missingSession))
     await expect(controller.unarchiveSession(sid('session')))
       .rejects.toThrow('workspace session unarchive failed: session/not-found: missing session')
+    mock.remote.workspace.archiveWorkspace.mockResolvedValueOnce(err(missingWorkspace))
+    const archiveMissingWorkspace = controller.archiveWorkspace(wid('missing'))
+    await expect(archiveMissingWorkspace).rejects.toBeInstanceOf(WorkspaceArchiveError)
+    await expect(archiveMissingWorkspace).rejects.toThrow('workspace workspace archive failed: workspace/not-found: gone')
+    // The active-Workspace refusal keeps every active Session and its work in
+    // the details so a surface can list what still runs before stopping it.
+    const activeWorkspace = new RemoteError('workspace/workspace-active', 'workspace is active', {
+      workspaceId: wid('one'),
+      sessions: [{ sessionId: sid('session'), activity: [{ kind: 'probe' }] }],
+    })
+    mock.remote.workspace.archiveWorkspace.mockResolvedValueOnce(err(activeWorkspace))
+    await expect(controller.archiveWorkspace(wid('one'))).rejects.toMatchObject({
+      name: 'WorkspaceArchiveError',
+      rpcError: {
+        code: 'workspace/workspace-active',
+        details: { workspaceId: 'one', sessions: [{ sessionId: 'session', activity: [{ kind: 'probe' }] }] },
+      },
+    })
+    mock.remote.workspace.unarchiveWorkspace.mockResolvedValueOnce(err(missingWorkspace))
+    await expect(controller.unarchiveWorkspace(wid('missing')))
+      .rejects.toThrow('workspace unarchive failed: workspace/not-found: gone')
     mock.remote.workspace.pinSession.mockResolvedValueOnce(err(missingSession))
     await expect(controller.pinSession(sid('session')))
       .rejects.toThrow('workspace session pin failed: session/not-found: missing session')

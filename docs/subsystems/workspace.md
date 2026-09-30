@@ -162,6 +162,8 @@ interface SessionActivity {
 
 `SessionActivityItem` carries the family-specific `id` (a session, job, or schedule id) and an optional display `label`. `archiveSession(sessionId)` asks the waterfall once, after the existence check, and rejects a non-empty answer with `WorkspaceActiveSessionError` (`sessionId`, `activity`) without writing; the controller maps it to the `workspace/session-active` error, whose details carry the same two fields. `archiveSession(sessionId, { stopActivity: true })` — the `ArchiveSessionOptions` field the transport request exposes as `stopActivity` — skips the check, writes the archive, then dispatches `workspace/session-stop`; a rejecting provider is logged and the archive stays, and the stopped work is never awaited to settlement. An already archived id neither asks nor stops. The shipped providers, what they stop, and the `agent/pre-step` gate that keeps an archived Session from running a model step are documented with the [registry package](../../packages/workspace/workspace/README.md#api-behavior); the decision record is the [archive-stops-running-work Agent Note](../../.agents/notes/implemented/feature/2026-09-21-archive-stops-running-session-work.md).
 
+A whole Workspace archives the same way through a second registry-global durable set, `archivedWorkspaceIds`. `archiveWorkspace(workspaceId)` asks the waterfall once per accounted Session that is not already in `archivedSessionIds` and rejects any reported activity with `WorkspaceActiveError` (`workspaceId`, `sessions`: each active Session with its `activity`) without writing; the controller maps it to `workspace/workspace-active` with the same details, and an unknown id maps to `workspace/not-found`. With `stopActivity: true` (`ArchiveWorkspaceOptions`, exposed by `WorkspaceArchiveWorkspaceRequest`) the set is written first and `workspace/session-stop` is dispatched for every Session that reported activity. Nothing else is written: the record, its order slot, its Session account, and each Session's own pin and archive flags stay as they are, so `unarchiveWorkspace(workspaceId)` restores the group in place and a Session archived on its own before stays archived. While the Workspace is archived, `isSessionEffectivelyArchived(sessionId)` reports its accounted Sessions as archived; the Session Controller's `agent/pre-step` gate reads that derived answer, and `session.create` with that `workspaceId` or `session.fork` of one of its Sessions is refused as `workspace/archived`. The follow stream carries the set in its baseline and as the `archivedWorkspaces` increment; both verbs return `WorkspaceArchivedWorkspacesValue`, the complete set.
+
 ## Consumers
 
 [`dsh-workspace-controller`](../../packages/api/workspace-controller) serves workspace CRUD to GUI clients over `ctx.workspaceRegistry`, and [`dsh-session-controller`](../../packages/api/session-controller) performs the create-session-then-attach flow above. [dsh-agent-instructions](../../packages/context/agent-instructions) is **not** a consumer despite the name: it discovers AGENTS.md-style instruction files under an agent's own cwd and never touches `ctx.workspaceRegistry` — the shared word refers to the user's working directory, not to this registry's entities.
@@ -391,6 +393,20 @@ Host service backing the generated `ctx.remote.workspace` namespace.
 @Remote('unarchiveSession') unarchiveSession(request: WorkspaceUnarchiveSessionRequest): Promise<WorkspaceArchiveValue>
 
 /**
+ * Hide one known Workspace and every Session it accounts from grouping surfaces.
+ * @param request - Workspace identity to archive and whether to stop its Sessions' work.
+ * @returns the complete resulting archived Workspace set.
+ */
+@Remote('archiveWorkspace') archiveWorkspace(request: WorkspaceArchiveWorkspaceRequest): Promise<WorkspaceArchivedWorkspacesValue>
+
+/**
+ * Restore one archived Workspace and its Sessions to grouping surfaces.
+ * @param request - Workspace identity to unarchive.
+ * @returns the complete resulting archived Workspace set.
+ */
+@Remote('unarchiveWorkspace') unarchiveWorkspace(request: WorkspaceUnarchiveWorkspaceRequest): Promise<WorkspaceArchivedWorkspacesValue>
+
+/**
  * Surface one known unarchived Session ahead of unpinned Sessions.
  * @param request - Session identity to pin.
  * @returns the complete resulting pin set, most recently pinned first.
@@ -573,9 +589,68 @@ archiveSession(sessionId: SessionId, options: ArchiveSessionOptions = {}): Promi
 unarchiveSession(sessionId: SessionId): Promise<void>
 
 /**
+ * Archive one workspace durably. The workspace must be in the durable
+ * registry order; an unknown id rejects with
+ * {@link WorkspaceUnknownWorkspaceError}. Every accounted session (the
+ * entity's header-validated `sessionIds`) not already in
+ * `archivedSessionIds` is asked through the `workspace/session-activity`
+ * waterfall, in account order. Without `stopActivity` any reported
+ * activity rejects with {@link WorkspaceActiveError} listing every active
+ * session before anything is written. With `stopActivity` the archive is
+ * written first, and the `workspace/session-stop` providers are then asked
+ * to stop each session that reported activity: the durable archived set is
+ * what a provider's `agent/pre-step` gate reads through
+ * {@link isSessionEffectivelyArchived}, so every wake the stops induce is
+ * already blocked. The sessions' own archive and pin flags are never
+ * written; their archive is derived while the workspace stays archived. An
+ * already archived id resolves without writing, asking, or stopping.
+ * @param id - The workspace to archive.
+ * @param options - Whether running work is stopped instead of refusing.
+ * @returns resolution after durability and, with `stopActivity`, after every stop request was issued.
+ */
+archiveWorkspace(id: WorkspaceId, options: ArchiveWorkspaceOptions = {}): Promise<void>
+
+/**
+ * Unarchive one workspace durably by dropping it from the registry-global
+ * archived Workspace set; the record, its order slot, and its accounting
+ * were never touched, so the workspace and its sessions return to their
+ * recorded positions, and a session archived individually before stays
+ * archived. Unarchiving runs no existence check because removing an id
+ * cannot introduce an unknown one. An id that is not archived resolves
+ * without writing.
+ * @param id - The workspace to unarchive.
+ * @returns resolution after durability.
+ */
+unarchiveWorkspace(id: WorkspaceId): Promise<void>
+
+/**
+ * The workspace whose header-validated `sessionIds` include a session.
+ * Session accounting is one-owner, so at most one entity qualifies; the
+ * scan runs in registry order over the synchronous projection and performs
+ * no persistence reads.
+ * @param sessionId - The session to locate.
+ * @returns the owning workspace, or `undefined` when no workspace accounts the session.
+ */
+owningWorkspaceOf(sessionId: SessionId): Workspace | undefined
+
+/**
+ * Whether a session is hidden and gate-blocked as archived: it is in the
+ * registry-global session archive set, or the workspace accounting it is
+ * in the archived Workspace set. The second condition is derived, never
+ * written, so unarchiving the workspace restores the session without a
+ * per-session write.
+ * @param sessionId - The session to test.
+ * @returns `true` when the session is archived directly or through its owning workspace.
+ */
+isSessionEffectivelyArchived(sessionId: SessionId): boolean
+
+/**
  * Pin one session durably, prepending it to the registry-global pin set.
  * The session must exist (live or in session persistence) and must not be
- * archived. An already pinned id resolves without writing or reordering.
+ * archived, directly or through an archived owning workspace
+ * ({@link isSessionEffectivelyArchived}); either rejects with
+ * {@link WorkspaceArchivedSessionPinError}. An already pinned id resolves
+ * without writing or reordering.
  * @param sessionId - The session to pin.
  * @returns resolution after durability.
  */

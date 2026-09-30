@@ -3,18 +3,22 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Workspace } from '@deepseek-ai/dsh-workspace'
 import {
+  WorkspaceActiveError,
   WorkspaceActiveSessionError,
   WorkspaceArchivedSessionPinError,
   WorkspaceId,
   WorkspaceMoveInvalidError,
   WorkspaceOrderInvalidError,
   WorkspaceUnknownSessionError,
+  WorkspaceUnknownWorkspaceError,
 } from '@deepseek-ai/dsh-workspace'
 import { RemoteError, remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
 import { workspaceView } from './feed.ts'
 import type {
   WorkspaceArchiveSessionRequest,
   WorkspaceArchiveValue,
+  WorkspaceArchiveWorkspaceRequest,
+  WorkspaceArchivedWorkspacesValue,
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
   WorkspaceDeleteRequest,
@@ -26,6 +30,7 @@ import type {
   WorkspacePinValue,
   WorkspaceRenameRequest,
   WorkspaceUnarchiveSessionRequest,
+  WorkspaceUnarchiveWorkspaceRequest,
   WorkspaceUnpinSessionRequest,
   WorkspaceValue,
 } from './types.ts'
@@ -192,6 +197,48 @@ export class WorkspaceCommands {
   async unarchiveSession(request: WorkspaceUnarchiveSessionRequest): Promise<WorkspaceArchiveValue> {
     await this.ctx.workspaceRegistry.unarchiveSession(request.sessionId)
     return { archivedSessionIds: [...this.ctx.workspaceRegistry.archivedSessionIds] }
+  }
+
+  /**
+   * Add one known Workspace to the registry-global archived Workspace set.
+   * Without `stopActivity` a Workspace whose accounted Sessions have running
+   * work is refused as `workspace/workspace-active` with every active Session
+   * and the activity the registry's providers reported; with it, the archive
+   * is written and the providers are then asked to stop that work.
+   * @param request - Workspace identity to archive and whether to stop its Sessions' work.
+   * @returns the complete resulting archived Workspace set.
+   */
+  async archiveWorkspace(request: WorkspaceArchiveWorkspaceRequest): Promise<WorkspaceArchivedWorkspacesValue> {
+    try {
+      await this.ctx.workspaceRegistry.archiveWorkspace(
+        WorkspaceId(request.workspaceId),
+        request.stopActivity === true ? { stopActivity: true } : {},
+      )
+    } catch (error) {
+      if (error instanceof WorkspaceUnknownWorkspaceError) throw workspaceNotFound(request.workspaceId)
+      if (error instanceof WorkspaceActiveError) {
+        throw new RemoteError(
+          'workspace/workspace-active',
+          error.message,
+          { workspaceId: request.workspaceId, sessions: error.sessions },
+          { cause: error },
+        )
+      }
+      throw error
+    }
+    return { archivedWorkspaceIds: [...this.ctx.workspaceRegistry.archivedWorkspaceIds] }
+  }
+
+  /**
+   * Drop one Workspace from the registry-global archived Workspace set. An id
+   * that is not archived is not an error: the call is idempotent, so a lost
+   * race with another surface resolves as a no-op.
+   * @param request - Workspace identity to unarchive.
+   * @returns the complete resulting archived Workspace set.
+   */
+  async unarchiveWorkspace(request: WorkspaceUnarchiveWorkspaceRequest): Promise<WorkspaceArchivedWorkspacesValue> {
+    await this.ctx.workspaceRegistry.unarchiveWorkspace(WorkspaceId(request.workspaceId))
+    return { archivedWorkspaceIds: [...this.ctx.workspaceRegistry.archivedWorkspaceIds] }
   }
 
   /**

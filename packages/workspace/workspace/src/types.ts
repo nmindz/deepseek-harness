@@ -19,6 +19,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
     /** No registration carries that Workspace identity. */
     'workspace/not-found': { readonly workspaceId: WorkspaceId }
+    /** The Workspace is archived; the verb is refused until it is restored. */
+    'workspace/archived': { readonly workspaceId: WorkspaceId }
   }
 }
 

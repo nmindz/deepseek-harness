@@ -5,6 +5,8 @@ import {
 import type {
   WorkspaceArchiveSessionRequest,
   WorkspaceArchiveValue,
+  WorkspaceArchiveWorkspaceRequest,
+  WorkspaceArchivedWorkspacesValue,
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
   WorkspaceDeleteRequest,
@@ -17,6 +19,7 @@ import type {
   WorkspacePinValue,
   WorkspaceRenameRequest,
   WorkspaceUnarchiveSessionRequest,
+  WorkspaceUnarchiveWorkspaceRequest,
   WorkspaceUnpinSessionRequest,
   WorkspaceValue,
   WorkspaceId,
@@ -102,6 +105,14 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
     _request: WorkspaceUnpinSessionRequest,
   ) => Promise<RemoteResult<WorkspacePinValue>> = () =>
     Promise.resolve(remoteOk({ pinnedSessionIds: [] }))
+  onArchiveWorkspace: (
+    request: WorkspaceArchiveWorkspaceRequest,
+  ) => Promise<RemoteResult<WorkspaceArchivedWorkspacesValue>> = request =>
+    Promise.resolve(remoteOk({ archivedWorkspaceIds: [request.workspaceId] }))
+  onUnarchiveWorkspace: (
+    _request: WorkspaceUnarchiveWorkspaceRequest,
+  ) => Promise<RemoteResult<WorkspaceArchivedWorkspacesValue>> = () =>
+    Promise.resolve(remoteOk({ archivedWorkspaceIds: [] }))
 
   create(request: WorkspaceCreateRequest): Promise<RemoteResult<WorkspaceCreateValue>> {
     this.record('create', request)
@@ -148,6 +159,20 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
     return this.onUnpinSession(request)
   }
 
+  archiveWorkspace(
+    request: WorkspaceArchiveWorkspaceRequest,
+  ): Promise<RemoteResult<WorkspaceArchivedWorkspacesValue>> {
+    this.record('archiveWorkspace', request)
+    return this.onArchiveWorkspace(request)
+  }
+
+  unarchiveWorkspace(
+    request: WorkspaceUnarchiveWorkspaceRequest,
+  ): Promise<RemoteResult<WorkspaceArchivedWorkspacesValue>> {
+    this.record('unarchiveWorkspace', request)
+    return this.onUnarchiveWorkspace(request)
+  }
+
   follow(_signal?: AbortSignal): RemoteStreamHandle<WorkspaceFollowFrame, never> {
     return streamHandle<WorkspaceFollowFrame>((async function* () {})())
   }
@@ -166,8 +191,9 @@ function baseline(
   items: readonly WorkspaceView[] = [],
   archivedSessionIds: readonly SessionId[] = [],
   pinnedSessionIds: readonly SessionId[] = [],
+  archivedWorkspaceIds: readonly WorkspaceId[] = [],
 ): void {
-  model.replaceBaseline({ items, archivedSessionIds, pinnedSessionIds })
+  model.replaceBaseline({ items, archivedSessionIds, pinnedSessionIds, archivedWorkspaceIds })
 }
 
 describe('ClientWorkspaceModel', () => {
@@ -504,6 +530,82 @@ describe('ClientWorkspaceModel', () => {
     gate.resolve(remoteOk({ pinnedSessionIds: [] }))
     await expect(pending).resolves.toMatchObject({ ok: true })
     expect(model.getSnapshot().pinnedSessionIds).toEqual(['first', 'second'])
+  })
+
+  it('applies Workspace archive echoes, keeps failed results unchanged, and short-circuits an equal pushed set', async () => {
+    const remote = new FakeWorkspaceRemote()
+    const model = modelFor(remote)
+    baseline(model, [workspace('one'), workspace('two')], [], [], [wid('two')])
+    expect(model.getSnapshot().archivedWorkspaceIds).toEqual(['two'])
+    // Archiving hides a Workspace without removing its row.
+    expect(model.getSnapshot().items.map(item => item.workspaceId)).toEqual(['one', 'two'])
+
+    remote.onArchiveWorkspace = () => Promise.resolve(workspaceError(new RemoteError(
+      'workspace/workspace-active', 'busy', { workspaceId: wid('one'), sessions: [{ sessionId: sid('s'), activity: [] }] },
+    )))
+    await expect(model.archiveWorkspace(wid('one'))).resolves.toMatchObject({ ok: false })
+    expect(model.getSnapshot().archivedWorkspaceIds).toEqual(['two'])
+    remote.onArchiveWorkspace = request => Promise.resolve(remoteOk({ archivedWorkspaceIds: [wid('two'), request.workspaceId] }))
+    await expect(model.archiveWorkspace(wid('one'), { stopActivity: true })).resolves.toMatchObject({ ok: true })
+    expect(model.getSnapshot().archivedWorkspaceIds).toEqual(['two', 'one'])
+    expect(remote.calls).toContainEqual({ method: 'archiveWorkspace', request: { workspaceId: 'one', stopActivity: true } })
+
+    remote.onUnarchiveWorkspace = () => Promise.resolve(workspaceError(
+      new RemoteError('gateway/internal', 'wire down', {}),
+    ))
+    await expect(model.unarchiveWorkspace(wid('one'))).resolves.toMatchObject({ ok: false })
+    expect(model.getSnapshot().archivedWorkspaceIds).toEqual(['two', 'one'])
+    remote.onUnarchiveWorkspace = () => Promise.resolve(remoteOk({ archivedWorkspaceIds: [wid('two')] }))
+    await expect(model.unarchiveWorkspace(wid('one'))).resolves.toMatchObject({ ok: true })
+    expect(model.getSnapshot().archivedWorkspaceIds).toEqual(['two'])
+    expect(remote.calls).toContainEqual({ method: 'unarchiveWorkspace', request: { workspaceId: 'one' } })
+
+    const before = model.getSnapshot()
+    model.replaceArchivedWorkspaces([wid('two')])
+    expect(model.getSnapshot()).toBe(before)
+    model.replaceArchivedWorkspaces([])
+    expect(model.getSnapshot()).not.toBe(before)
+    expect(model.getSnapshot().archivedWorkspaceIds).toEqual([])
+  })
+
+  it('keeps the latest Workspace archive reply when overlapping requests settle out of order', async () => {
+    const remote = new FakeWorkspaceRemote()
+    const model = modelFor(remote)
+    const firstGate = deferred<RemoteResult<WorkspaceArchivedWorkspacesValue>>()
+    const secondGate = deferred<RemoteResult<WorkspaceArchivedWorkspacesValue>>()
+    let request = 0
+    remote.onArchiveWorkspace = () => request++ === 0 ? firstGate.promise : secondGate.promise
+
+    const first = model.archiveWorkspace(wid('first'))
+    const second = model.archiveWorkspace(wid('second'))
+    secondGate.resolve(remoteOk({ archivedWorkspaceIds: [wid('first'), wid('second')] }))
+    await expect(second).resolves.toMatchObject({ ok: true })
+    expect(model.getSnapshot().archivedWorkspaceIds).toEqual(['first', 'second'])
+    firstGate.resolve(remoteOk({ archivedWorkspaceIds: [wid('first')] }))
+    await expect(first).resolves.toMatchObject({ ok: true })
+    expect(model.getSnapshot().archivedWorkspaceIds).toEqual(['first', 'second'])
+  })
+
+  it('keeps a pushed or baseline archived Workspace set when an unarchive reply lands later', async () => {
+    const remote = new FakeWorkspaceRemote()
+    const model = modelFor(remote)
+    baseline(model, [], [], [], [wid('first')])
+    const pushedGate = deferred<RemoteResult<WorkspaceArchivedWorkspacesValue>>()
+    remote.onUnarchiveWorkspace = () => pushedGate.promise
+
+    const pending = model.unarchiveWorkspace(wid('first'))
+    model.replaceArchivedWorkspaces([wid('first'), wid('second')])
+    pushedGate.resolve(remoteOk({ archivedWorkspaceIds: [] }))
+    await expect(pending).resolves.toMatchObject({ ok: true })
+    expect(model.getSnapshot().archivedWorkspaceIds).toEqual(['first', 'second'])
+
+    const baselineGate = deferred<RemoteResult<WorkspaceArchivedWorkspacesValue>>()
+    remote.onUnarchiveWorkspace = () => baselineGate.promise
+    const superseded = model.unarchiveWorkspace(wid('first'))
+    baseline(model, [], [], [], [wid('third')])
+    baselineGate.resolve(remoteOk({ archivedWorkspaceIds: [] }))
+    await expect(superseded).resolves.toMatchObject({ ok: true })
+    expect(model.getSnapshot().archivedWorkspaceIds).toEqual(['third'])
   })
 
   it('mirrors the Host pin drop locally when an archive echo lands', async () => {

@@ -18,16 +18,21 @@ export class WorkspaceCreateError extends Error {
 }
 
 /**
- * Archive failed on the Host. `rpcError.code` distinguishes the active-session
- * refusal (`workspace/session-active`, whose details name what still runs)
- * from a missing session or a carrier fault.
+ * Archive failed on the Host. `rpcError.code` distinguishes the running-work
+ * refusals — `workspace/session-active` for a Session, whose details name
+ * what still runs, and `workspace/workspace-active` for a Workspace, whose
+ * details list every active accounted Session with its work — from a missing
+ * Session or Workspace or a carrier fault.
  */
 export class WorkspaceArchiveError extends Error {
   override readonly name = 'WorkspaceArchiveError'
 
-  /** @param rpcError - Host business or folded carrier failure. */
-  constructor(readonly rpcError: RemoteFailure) {
-    super(`workspace session archive failed: ${rpcError.code}: ${rpcError.message}`)
+  /**
+   * @param subject - What the refused archive named: `'session'` or `'workspace'`.
+   * @param rpcError - Host business or folded carrier failure.
+   */
+  constructor(subject: 'session' | 'workspace', readonly rpcError: RemoteFailure) {
+    super(`workspace ${subject} archive failed: ${rpcError.code}: ${rpcError.message}`)
   }
 }
 
@@ -90,6 +95,20 @@ export interface IWorkspaces {
    * @param sessionId - Session to unarchive.
    */
   unarchiveSession(sessionId: SessionId): Promise<void>
+  /**
+   * Archive a Workspace, hiding it and every Session it accounts from grouping surfaces.
+   * @param workspaceId - Workspace to archive.
+   * @param options - `stopActivity` asks the Host to stop its Sessions' running work instead of refusing.
+   * @throws {WorkspaceArchiveError} when the Host refuses; without `stopActivity` a Workspace whose
+   *   Sessions have running work fails as `workspace/workspace-active`, its details listing each
+   *   active Session and what runs.
+   */
+  archiveWorkspace(workspaceId: WorkspaceId, options?: { readonly stopActivity?: boolean }): Promise<void>
+  /**
+   * Unarchive a Workspace, restoring it and its Sessions to grouping surfaces.
+   * @param workspaceId - Workspace to unarchive.
+   */
+  unarchiveWorkspace(workspaceId: WorkspaceId): Promise<void>
   /**
    * Pin a Session ahead of unpinned Sessions on Workspace grouping surfaces.
    * @param sessionId - Session to pin.
@@ -157,12 +176,22 @@ export class WorkspaceController extends Service implements IWorkspaces {
 
   async archiveSession(sessionId: SessionId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {
     const result = await this.model.archiveSession(sessionId, options)
-    if (!result.ok) throw new WorkspaceArchiveError(result.error)
+    if (!result.ok) throw new WorkspaceArchiveError('session', result.error)
   }
 
   async unarchiveSession(sessionId: SessionId): Promise<void> {
     const result = await this.model.unarchiveSession(sessionId)
     if (!result.ok) throw commandError('session unarchive', result.error)
+  }
+
+  async archiveWorkspace(workspaceId: WorkspaceId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {
+    const result = await this.model.archiveWorkspace(workspaceId, options)
+    if (!result.ok) throw new WorkspaceArchiveError('workspace', result.error)
+  }
+
+  async unarchiveWorkspace(workspaceId: WorkspaceId): Promise<void> {
+    const result = await this.model.unarchiveWorkspace(workspaceId)
+    if (!result.ok) throw commandError('unarchive', result.error)
   }
 
   async pinSession(sessionId: SessionId): Promise<void> {

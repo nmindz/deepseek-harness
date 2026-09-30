@@ -7,6 +7,8 @@ import type { RemoteFailure, RemoteResult, TypertClientRemote } from '@deepseek-
 import type {
   WorkspaceArchiveSessionRequest,
   WorkspaceArchiveValue,
+  WorkspaceArchiveWorkspaceRequest,
+  WorkspaceArchivedWorkspacesValue,
   WorkspaceBaseline,
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
@@ -16,6 +18,7 @@ import type {
   WorkspacePinSessionRequest,
   WorkspacePinValue,
   WorkspaceUnarchiveSessionRequest,
+  WorkspaceUnarchiveWorkspaceRequest,
   WorkspaceUnpinSessionRequest,
   WorkspaceValue,
   WorkspaceId,
@@ -35,6 +38,8 @@ export interface WorkspaceSnapshot {
   readonly archivedSessionIds: WorkspaceArchiveValue['archivedSessionIds']
   /** Complete registry-global pin set, most recently pinned first. */
   readonly pinnedSessionIds: WorkspacePinValue['pinnedSessionIds']
+  /** Complete registry-global archived Workspace set in Host order; members stay in `items`. */
+  readonly archivedWorkspaceIds: WorkspaceArchivedWorkspacesValue['archivedWorkspaceIds']
   readonly state: 'idle' | 'loading' | 'error'
   readonly phase: WorkspaceListPhase
   readonly error: RemoteFailure | null
@@ -54,6 +59,10 @@ export interface WorkspaceFollowSink {
   replaceArchived(sessionIds: WorkspaceArchiveValue['archivedSessionIds']): void
   /** Replace the complete pinned Session set. */
   replacePinned(pinnedSessionIds: WorkspacePinValue['pinnedSessionIds']): void
+  /** Replace the complete archived Workspace set. */
+  replaceArchivedWorkspaces(
+    archivedWorkspaceIds: WorkspaceArchivedWorkspacesValue['archivedWorkspaceIds'],
+  ): void
 }
 
 /**
@@ -63,6 +72,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   private items: readonly WorkspaceView[] = []
   private archivedSessionIds: WorkspaceArchiveValue['archivedSessionIds'] = []
   private pinnedSessionIds: WorkspacePinValue['pinnedSessionIds'] = []
+  private archivedWorkspaceIds: WorkspaceArchivedWorkspacesValue['archivedWorkspaceIds'] = []
   private state: WorkspaceSnapshot['state'] = 'loading'
   private phase: WorkspaceListPhase = 'pending'
   private error: RemoteFailure | null = null
@@ -76,6 +86,8 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   private archiveRequestSeq = 0
   /** Latest pin-set request; a later request or a pushed set supersedes it. */
   private pinRequestSeq = 0
+  /** Latest archived-Workspace-set request; a later request or a pushed set supersedes it. */
+  private archivedWorkspaceRequestSeq = 0
   /** Host Workspace ids are never reused, so delayed data cannot resurrect a removed row. */
   private readonly removedIds = new Set<WorkspaceId>()
   private readonly listeners = new Set<() => void>()
@@ -224,6 +236,45 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   }
 
   /**
+   * Archive one Workspace and install the returned complete archived Workspace set.
+   * A reply superseded by a later Workspace archive request or a pushed set installs nothing.
+   * @param workspaceId - Workspace to archive.
+   * @param options - Whether the Host stops its Sessions' running work instead of refusing.
+   * @returns generated Remote result.
+   */
+  async archiveWorkspace(
+    workspaceId: WorkspaceArchiveWorkspaceRequest['workspaceId'],
+    options: Pick<WorkspaceArchiveWorkspaceRequest, 'stopActivity'> = {},
+  ): Promise<RemoteResult<WorkspaceArchivedWorkspacesValue>> {
+    const requestSeq = ++this.archivedWorkspaceRequestSeq
+    const result = await this.remote.archiveWorkspace({
+      workspaceId,
+      ...(options.stopActivity === true ? { stopActivity: true } : {}),
+    })
+    if (result.ok && requestSeq === this.archivedWorkspaceRequestSeq) {
+      this.installArchivedWorkspaces(result.value.archivedWorkspaceIds)
+    }
+    return result
+  }
+
+  /**
+   * Unarchive one Workspace and install the returned complete archived Workspace set.
+   * A reply superseded by a later Workspace archive request or a pushed set installs nothing.
+   * @param workspaceId - Workspace to unarchive.
+   * @returns generated Remote result.
+   */
+  async unarchiveWorkspace(
+    workspaceId: WorkspaceUnarchiveWorkspaceRequest['workspaceId'],
+  ): Promise<RemoteResult<WorkspaceArchivedWorkspacesValue>> {
+    const requestSeq = ++this.archivedWorkspaceRequestSeq
+    const result = await this.remote.unarchiveWorkspace({ workspaceId })
+    if (result.ok && requestSeq === this.archivedWorkspaceRequestSeq) {
+      this.installArchivedWorkspaces(result.value.archivedWorkspaceIds)
+    }
+    return result
+  }
+
+  /**
    * Pin one Session and install the returned complete pin set.
    * A reply superseded by a later pin request or a pushed set installs nothing.
    * @param sessionId - Session to pin.
@@ -265,9 +316,11 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     this.orderFrameGeneration++
     this.archiveRequestSeq++
     this.pinRequestSeq++
+    this.archivedWorkspaceRequestSeq++
     this.installViews(baseline.items)
     this.installArchived(baseline.archivedSessionIds)
     this.installPinned(baseline.pinnedSessionIds)
+    this.installArchivedWorkspaces(baseline.archivedWorkspaceIds)
     this.state = 'idle'
     this.phase = 'ready'
     this.error = null
@@ -306,6 +359,17 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   replacePinned(pinnedSessionIds: WorkspacePinValue['pinnedSessionIds']): void {
     this.pinRequestSeq++
     this.installPinned(pinnedSessionIds)
+  }
+
+  /**
+   * Replace the archived Workspace set from the current follow generation.
+   * @param archivedWorkspaceIds - complete Host-confirmed archived Workspace set.
+   */
+  replaceArchivedWorkspaces(
+    archivedWorkspaceIds: WorkspaceArchivedWorkspacesValue['archivedWorkspaceIds'],
+  ): void {
+    this.archivedWorkspaceRequestSeq++
+    this.installArchivedWorkspaces(archivedWorkspaceIds)
   }
 
   /** Keep the last complete projection visible while a lost carrier reconnects. */
@@ -350,6 +414,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
       items: this.items,
       archivedSessionIds: this.archivedSessionIds,
       pinnedSessionIds: this.pinnedSessionIds,
+      archivedWorkspaceIds: this.archivedWorkspaceIds,
       state: this.state,
       phase: this.phase,
       error: this.error,
@@ -367,6 +432,15 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     if (pinnedSessionIds.length === this.pinnedSessionIds.length
       && pinnedSessionIds.every((id, index) => id === this.pinnedSessionIds[index])) return
     this.pinnedSessionIds = [...pinnedSessionIds]
+    this.invalidate()
+  }
+
+  private installArchivedWorkspaces(
+    archivedWorkspaceIds: WorkspaceArchivedWorkspacesValue['archivedWorkspaceIds'],
+  ): void {
+    if (archivedWorkspaceIds.length === this.archivedWorkspaceIds.length
+      && archivedWorkspaceIds.every((id, index) => id === this.archivedWorkspaceIds[index])) return
+    this.archivedWorkspaceIds = [...archivedWorkspaceIds]
     this.invalidate()
   }
 

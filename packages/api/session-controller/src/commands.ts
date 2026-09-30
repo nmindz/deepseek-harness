@@ -115,6 +115,7 @@ export class SessionCommandController {
           workspaceId: request.workspaceId,
         })
       }
+      this.rejectArchivedWorkspace(workspace, 'create a session in')
     }
     const cwd = workspace?.path ?? request.cwd ?? this.defaultCwd
     let adopted: Agent
@@ -263,6 +264,7 @@ export class SessionCommandController {
         {},
       )
     }
+    if (workspace !== undefined) this.rejectArchivedWorkspace(workspace, 'fork a session into')
     const childId = brandString<SessionId>(`session-${randomUUID()}`)
     const composition = await this.agents.composeAgent(this.agents.presetForObservation(source))
     try {
@@ -563,6 +565,16 @@ export class SessionCommandController {
     }
     const inspected = await inspectApiSession(this.ctx, sessionId)
     return { id: inspected.meta.id, header: inspected.meta, events: inspected.events }
+  }
+
+  /** An archived Workspace accepts no new Session, whether created or forked into it. */
+  private rejectArchivedWorkspace(workspace: Workspace, verb: string): void {
+    if (!this.ctx.workspaceRegistry.archivedWorkspaceIds.includes(workspace.id)) return
+    throw new RemoteError(
+      'workspace/archived',
+      `cannot ${verb} workspace "${workspace.id}": the workspace is archived`,
+      { workspaceId: workspace.id },
+    )
   }
 
   private async forkWorkspace(source: SessionHeader): Promise<Workspace | undefined> {

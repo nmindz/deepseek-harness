@@ -93,6 +93,45 @@ export class WorkspaceOrderInvalidError extends Error {
   }
 }
 
+/** An archiveWorkspace request named a workspace absent from the durable registry order. */
+export class WorkspaceUnknownWorkspaceError extends Error {
+  /**
+   * @param workspaceId - The unknown workspace id.
+   * @param verb - The registry operation that named the workspace.
+   */
+  constructor(readonly workspaceId: WorkspaceId, verb: 'archive') {
+    super(`cannot ${verb} workspace '${workspaceId}': the registry holds no such workspace`)
+    this.name = 'WorkspaceUnknownWorkspaceError'
+  }
+}
+
+/** One accounted session's reported activity, as collected by {@link WorkspaceRegistry.archiveWorkspace}. */
+export interface WorkspaceSessionActivity {
+  readonly sessionId: SessionId
+  /** The reported activity, in listener order. */
+  readonly activity: readonly SessionActivity[]
+}
+
+/**
+ * An archiveWorkspace request named a workspace whose accounted sessions at
+ * least one `workspace/session-activity` listener reported active. Nothing
+ * was written; `sessions` names every active session and what must stop.
+ */
+export class WorkspaceActiveError extends Error {
+  /**
+   * @param workspaceId - The active workspace id.
+   * @param sessions - Each active session with its reported activity, in account order.
+   */
+  constructor(readonly workspaceId: WorkspaceId, readonly sessions: readonly WorkspaceSessionActivity[]) {
+    super(
+      `cannot archive workspace '${workspaceId}': `
+      + `${sessions.length} accounted ${sessions.length === 1 ? 'session is' : 'sessions are'} active `
+      + `(${sessions.map(entry => entry.sessionId).join(', ')})`,
+    )
+    this.name = 'WorkspaceActiveError'
+  }
+}
+
 
 /** The session an archive request is about to write into the archive set. */
 export interface SessionActivityRequest {
@@ -106,6 +145,18 @@ export interface ArchiveSessionOptions {
    * refusing the archive because of it. The archive is written first, then
    * the stops are requested; running work is never awaited to settlement, and
    * a provider failure is logged without undoing the archive.
+   */
+  readonly stopActivity?: boolean
+}
+
+/** Caller choices for {@link WorkspaceRegistry.archiveWorkspace}. */
+export interface ArchiveWorkspaceOptions {
+  /**
+   * Ask the composed providers to stop the running work of every accounted
+   * session that reported activity instead of refusing the archive because
+   * of it. The archive is written first, then the stops are requested;
+   * running work is never awaited to settlement, and a provider failure is
+   * logged without undoing the archive.
    */
   readonly stopActivity?: boolean
 }
@@ -408,6 +459,119 @@ export class WorkspaceRegistry extends Service {
   }
 
   /**
+   * The registry-global archived Workspace set: workspaces hidden from every
+   * grouping surface together with every session they account. Archiving
+   * never touches the record, its order slot, or its accounting — an
+   * archived workspace keeps its `workspaceIds` slot so unarchiving restores
+   * its position and its sessions in place.
+   * @returns the archived workspace ids in archive order.
+   */
+  get archivedWorkspaceIds(): readonly WorkspaceId[] {
+    return this.requireState().archivedWorkspaceIds
+  }
+
+  /**
+   * Archive one workspace durably. The workspace must be in the durable
+   * registry order; an unknown id rejects with
+   * {@link WorkspaceUnknownWorkspaceError}. Every accounted session (the
+   * entity's header-validated `sessionIds`) not already in
+   * `archivedSessionIds` is asked through the `workspace/session-activity`
+   * waterfall, in account order. Without `stopActivity` any reported
+   * activity rejects with {@link WorkspaceActiveError} listing every active
+   * session before anything is written. With `stopActivity` the archive is
+   * written first, and the `workspace/session-stop` providers are then asked
+   * to stop each session that reported activity: the durable archived set is
+   * what a provider's `agent/pre-step` gate reads through
+   * {@link isSessionEffectivelyArchived}, so every wake the stops induce is
+   * already blocked. The sessions' own archive and pin flags are never
+   * written; their archive is derived while the workspace stays archived. An
+   * already archived id resolves without writing, asking, or stopping.
+   * @param id - The workspace to archive.
+   * @param options - Whether running work is stopped instead of refusing.
+   * @returns resolution after durability and, with `stopActivity`, after every stop request was issued.
+   */
+  archiveWorkspace(id: WorkspaceId, options: ArchiveWorkspaceOptions = {}): Promise<void> {
+    return this.enqueueOperation(async () => {
+      // The chain slot serializes against every other registry write, so this
+      // check-then-write pair cannot interleave with another archive or delete.
+      const state = this.requireState()
+      if (state.archivedWorkspaceIds.includes(id)) return
+      const entity = this.entities.get(id)
+      if (entity === undefined) throw new WorkspaceUnknownWorkspaceError(id, 'archive')
+      const active: WorkspaceSessionActivity[] = []
+      for (const sessionId of entity.sessionIds) {
+        if (state.archivedSessionIds.includes(sessionId)) continue
+        const activity = await this.ctx.waterfall(
+          'workspace/session-activity', { sessionId }, () => Promise.resolve([]),
+        )
+        if (activity.length > 0) active.push({ sessionId, activity })
+      }
+      if (active.length > 0 && options.stopActivity !== true) throw new WorkspaceActiveError(id, active)
+      await this.setState({
+        ...state,
+        archivedWorkspaceIds: [...state.archivedWorkspaceIds, id],
+      })
+      for (const entry of active) await this.stopSessionActivity(entry.sessionId)
+    })
+  }
+
+  /**
+   * Unarchive one workspace durably by dropping it from the registry-global
+   * archived Workspace set; the record, its order slot, and its accounting
+   * were never touched, so the workspace and its sessions return to their
+   * recorded positions, and a session archived individually before stays
+   * archived. Unarchiving runs no existence check because removing an id
+   * cannot introduce an unknown one. An id that is not archived resolves
+   * without writing.
+   * @param id - The workspace to unarchive.
+   * @returns resolution after durability.
+   */
+  unarchiveWorkspace(id: WorkspaceId): Promise<void> {
+    return this.enqueueOperation(async () => {
+      // The chain slot serializes against every other registry write, so this
+      // check-then-write pair cannot interleave with a concurrent archive.
+      const state = this.requireState()
+      if (!state.archivedWorkspaceIds.includes(id)) return
+      await this.setState({
+        ...state,
+        archivedWorkspaceIds: state.archivedWorkspaceIds.filter(workspaceId => workspaceId !== id),
+      })
+    })
+  }
+
+  /**
+   * The workspace whose header-validated `sessionIds` include a session.
+   * Session accounting is one-owner, so at most one entity qualifies; the
+   * scan runs in registry order over the synchronous projection and performs
+   * no persistence reads.
+   * @param sessionId - The session to locate.
+   * @returns the owning workspace, or `undefined` when no workspace accounts the session.
+   */
+  owningWorkspaceOf(sessionId: SessionId): Workspace | undefined {
+    for (const id of this.requireState().workspaceIds) {
+      const entity = this.entities.get(id)
+      if (entity !== undefined && entity.sessionIds.includes(sessionId)) return entity
+    }
+    return undefined
+  }
+
+  /**
+   * Whether a session is hidden and gate-blocked as archived: it is in the
+   * registry-global session archive set, or the workspace accounting it is
+   * in the archived Workspace set. The second condition is derived, never
+   * written, so unarchiving the workspace restores the session without a
+   * per-session write.
+   * @param sessionId - The session to test.
+   * @returns `true` when the session is archived directly or through its owning workspace.
+   */
+  isSessionEffectivelyArchived(sessionId: SessionId): boolean {
+    const state = this.requireState()
+    if (state.archivedSessionIds.includes(sessionId)) return true
+    const owner = this.owningWorkspaceOf(sessionId)
+    return owner !== undefined && state.archivedWorkspaceIds.includes(owner.id)
+  }
+
+  /**
    * The registry-global pin set: sessions surfaced ahead of every unpinned
    * session on grouping surfaces. Pinning never touches workspace accounting.
    * @returns Session ids in pin order (most recently pinned first).
@@ -419,7 +583,10 @@ export class WorkspaceRegistry extends Service {
   /**
    * Pin one session durably, prepending it to the registry-global pin set.
    * The session must exist (live or in session persistence) and must not be
-   * archived. An already pinned id resolves without writing or reordering.
+   * archived, directly or through an archived owning workspace
+   * ({@link isSessionEffectivelyArchived}); either rejects with
+   * {@link WorkspaceArchivedSessionPinError}. An already pinned id resolves
+   * without writing or reordering.
    * @param sessionId - The session to pin.
    * @returns resolution after durability.
    */
@@ -428,7 +595,7 @@ export class WorkspaceRegistry extends Service {
       // The chain slot serializes against every other registry write, so this
       // check-then-write pair cannot interleave with another pin or archive.
       if (this.requireState().pinnedSessionIds.includes(sessionId)) return
-      if (this.requireState().archivedSessionIds.includes(sessionId)) {
+      if (this.isSessionEffectivelyArchived(sessionId)) {
         throw new WorkspaceArchivedSessionPinError(sessionId)
       }
       if (!(await this.sessionKnown(sessionId))) {
@@ -589,6 +756,7 @@ export class WorkspaceRegistry extends Service {
       pendingMutation: undefined,
       initialized: true,
       workspaceIds: state.workspaceIds.filter(workspaceId => workspaceId !== id),
+      archivedWorkspaceIds: state.archivedWorkspaceIds.filter(workspaceId => workspaceId !== id),
     }
     await this.setState({
       ...nextState,
@@ -729,6 +897,7 @@ export class WorkspaceRegistry extends Service {
         workspaceIds,
         archivedSessionIds: state.archivedSessionIds,
         pinnedSessionIds: state.pinnedSessionIds,
+        archivedWorkspaceIds: state.archivedWorkspaceIds,
       })
     }
     await this.setState({
@@ -736,6 +905,7 @@ export class WorkspaceRegistry extends Service {
       workspaceIds,
       archivedSessionIds: state.archivedSessionIds,
       pinnedSessionIds: state.pinnedSessionIds,
+      archivedWorkspaceIds: state.archivedWorkspaceIds,
     })
   }
 
@@ -756,6 +926,18 @@ export class WorkspaceRegistry extends Service {
       throw new Error(
         `workspace domain is inconsistent: workspace '${orphan as WorkspaceId}' is absent from registry order`,
       )
+    }
+    const archived = new Set<WorkspaceId>()
+    for (const id of state.archivedWorkspaceIds) {
+      if (archived.has(id)) {
+        throw new Error(`workspace domain is inconsistent: archived workspace set repeats workspace '${id}'`)
+      }
+      if (!order.has(id)) {
+        throw new Error(
+          `workspace domain is inconsistent: archived workspace '${id}' is absent from registry order`,
+        )
+      }
+      archived.add(id)
     }
 
     const paths = new Map<string, WorkspaceId>()

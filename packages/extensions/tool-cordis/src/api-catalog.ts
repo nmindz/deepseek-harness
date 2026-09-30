@@ -3642,6 +3642,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the complete resulting archive set.',
       },
       {
+        signature: '@Remote(\'archiveWorkspace\') archiveWorkspace(request: WorkspaceArchiveWorkspaceRequest): Promise<WorkspaceArchivedWorkspacesValue>',
+        description: 'Hide one known Workspace and every Session it accounts from grouping surfaces.',
+        parameters: [{ name: 'request', description: 'Workspace identity to archive and whether to stop its Sessions\' work.' }],
+        returns: 'the complete resulting archived Workspace set.',
+      },
+      {
+        signature: '@Remote(\'unarchiveWorkspace\') unarchiveWorkspace(request: WorkspaceUnarchiveWorkspaceRequest): Promise<WorkspaceArchivedWorkspacesValue>',
+        description: 'Restore one archived Workspace and its Sessions to grouping surfaces.',
+        parameters: [{ name: 'request', description: 'Workspace identity to unarchive.' }],
+        returns: 'the complete resulting archived Workspace set.',
+      },
+      {
         signature: '@Remote(\'pinSession\') pinSession(request: WorkspacePinSessionRequest): Promise<WorkspacePinValue>',
         description: 'Surface one known unarchived Session ahead of unpinned Sessions.',
         parameters: [{ name: 'request', description: 'Session identity to pin.' }],
@@ -3753,8 +3765,32 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'resolution after durability.',
       },
       {
+        signature: 'archiveWorkspace(id: WorkspaceId, options: ArchiveWorkspaceOptions = {}): Promise<void>',
+        description: 'Archive one workspace durably. The workspace must be in the durable registry order; an unknown id rejects with WorkspaceUnknownWorkspaceError. Every accounted session (the entity\'s header-validated `sessionIds`) not already in `archivedSessionIds` is asked through the `workspace/session-activity` waterfall, in account order. Without `stopActivity` any reported activity rejects with WorkspaceActiveError listing every active session before anything is written. With `stopActivity` the archive is written first, and the `workspace/session-stop` providers are then asked to stop each session that reported activity: the durable archived set is what a provider\'s `agent/pre-step` gate reads through isSessionEffectivelyArchived, so every wake the stops induce is already blocked. The sessions\' own archive and pin flags are never written; their archive is derived while the workspace stays archived. An already archived id resolves without writing, asking, or stopping.',
+        parameters: [{ name: 'id', description: 'The workspace to archive.' }, { name: 'options', description: 'Whether running work is stopped instead of refusing.' }],
+        returns: 'resolution after durability and, with `stopActivity`, after every stop request was issued.',
+      },
+      {
+        signature: 'unarchiveWorkspace(id: WorkspaceId): Promise<void>',
+        description: 'Unarchive one workspace durably by dropping it from the registry-global archived Workspace set; the record, its order slot, and its accounting were never touched, so the workspace and its sessions return to their recorded positions, and a session archived individually before stays archived. Unarchiving runs no existence check because removing an id cannot introduce an unknown one. An id that is not archived resolves without writing.',
+        parameters: [{ name: 'id', description: 'The workspace to unarchive.' }],
+        returns: 'resolution after durability.',
+      },
+      {
+        signature: 'owningWorkspaceOf(sessionId: SessionId): Workspace | undefined',
+        description: 'The workspace whose header-validated `sessionIds` include a session. Session accounting is one-owner, so at most one entity qualifies; the scan runs in registry order over the synchronous projection and performs no persistence reads.',
+        parameters: [{ name: 'sessionId', description: 'The session to locate.' }],
+        returns: 'the owning workspace, or `undefined` when no workspace accounts the session.',
+      },
+      {
+        signature: 'isSessionEffectivelyArchived(sessionId: SessionId): boolean',
+        description: 'Whether a session is hidden and gate-blocked as archived: it is in the registry-global session archive set, or the workspace accounting it is in the archived Workspace set. The second condition is derived, never written, so unarchiving the workspace restores the session without a per-session write.',
+        parameters: [{ name: 'sessionId', description: 'The session to test.' }],
+        returns: '`true` when the session is archived directly or through its owning workspace.',
+      },
+      {
         signature: 'pinSession(sessionId: SessionId): Promise<void>',
-        description: 'Pin one session durably, prepending it to the registry-global pin set. The session must exist (live or in session persistence) and must not be archived. An already pinned id resolves without writing or reordering.',
+        description: 'Pin one session durably, prepending it to the registry-global pin set. The session must exist (live or in session persistence) and must not be archived, directly or through an archived owning workspace (isSessionEffectivelyArchived); either rejects with WorkspaceArchivedSessionPinError. An already pinned id resolves without writing or reordering.',
         parameters: [{ name: 'sessionId', description: 'The session to pin.' }],
         returns: 'resolution after durability.',
       },
@@ -4575,6 +4611,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ArchiveSessionOptions',
     declaration: 'export interface ArchiveSessionOptions {\n    readonly stopActivity?: boolean;\n}',
+  },
+  {
+    name: 'ArchiveWorkspaceOptions',
+    declaration: 'export interface ArchiveWorkspaceOptions {\n    readonly stopActivity?: boolean;\n}',
   },
   {
     name: 'AskOptions',
@@ -8261,6 +8301,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface Workspace {\n    readonly id: WorkspaceId;\n    readonly path: string;\n    readonly title: string;\n    readonly createdAt: string;\n    readonly updatedAt: string;\n    readonly sessionIds: readonly SessionId[];\n    setTitle(title: string): Promise<void>;\n    attachSession(sessionId: SessionId): Promise<void>;\n    insertSessionBefore(sessionId: SessionId, beforeSessionId?: SessionId): Promise<void>;\n    detachSession(sessionId: SessionId): Promise<void>;\n    status(): Promise<\'ok\' | \'missing-dir\'>;\n}',
   },
   {
+    name: 'WorkspaceArchivedWorkspacesValue',
+    declaration: 'export interface WorkspaceArchivedWorkspacesValue {\n    readonly archivedWorkspaceIds: readonly WorkspaceId[];\n}',
+  },
+  {
     name: 'WorkspaceArchiveSessionRequest',
     declaration: 'export interface WorkspaceArchiveSessionRequest {\n    readonly sessionId: SessionId;\n    readonly stopActivity?: boolean;\n}',
   },
@@ -8269,8 +8313,12 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface WorkspaceArchiveValue {\n    readonly archivedSessionIds: readonly SessionId[];\n}',
   },
   {
+    name: 'WorkspaceArchiveWorkspaceRequest',
+    declaration: 'export interface WorkspaceArchiveWorkspaceRequest {\n    readonly workspaceId: WorkspaceId;\n    readonly stopActivity?: boolean;\n}',
+  },
+  {
     name: 'WorkspaceBaseline',
-    declaration: 'export interface WorkspaceBaseline {\n    readonly items: readonly WorkspaceView[];\n    readonly archivedSessionIds: readonly SessionId[];\n    readonly pinnedSessionIds: readonly SessionId[];\n}',
+    declaration: 'export interface WorkspaceBaseline {\n    readonly items: readonly WorkspaceView[];\n    readonly archivedSessionIds: readonly SessionId[];\n    readonly pinnedSessionIds: readonly SessionId[];\n    readonly archivedWorkspaceIds: readonly WorkspaceId[];\n}',
   },
   {
     name: 'WorkspaceByteRange',
@@ -8354,7 +8402,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'WorkspaceFollowIncrement',
-    declaration: 'export type WorkspaceFollowIncrement = {\n    readonly type: \'upsert\';\n    readonly workspace: WorkspaceView;\n} | {\n    readonly type: \'remove\';\n    readonly workspaceId: WorkspaceId;\n} | {\n    readonly type: \'order\';\n    readonly workspaceIds: readonly WorkspaceId[];\n} | {\n    readonly type: \'archived\';\n    readonly archivedSessionIds: readonly SessionId[];\n} | {\n    readonly type: \'pinned\';\n    readonly pinnedSessionIds: readonly SessionId[];\n};',
+    declaration: 'export type WorkspaceFollowIncrement = {\n    readonly type: \'upsert\';\n    readonly workspace: WorkspaceView;\n} | {\n    readonly type: \'remove\';\n    readonly workspaceId: WorkspaceId;\n} | {\n    readonly type: \'order\';\n    readonly workspaceIds: readonly WorkspaceId[];\n} | {\n    readonly type: \'archived\';\n    readonly archivedSessionIds: readonly SessionId[];\n} | {\n    readonly type: \'pinned\';\n    readonly pinnedSessionIds: readonly SessionId[];\n} | {\n    readonly type: \'archivedWorkspaces\';\n    readonly archivedWorkspaceIds: readonly WorkspaceId[];\n};',
   },
   {
     name: 'WorkspaceInsertBeforeRequest',
@@ -8383,6 +8431,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'WorkspaceUnarchiveSessionRequest',
     declaration: 'export interface WorkspaceUnarchiveSessionRequest {\n    readonly sessionId: SessionId;\n}',
+  },
+  {
+    name: 'WorkspaceUnarchiveWorkspaceRequest',
+    declaration: 'export interface WorkspaceUnarchiveWorkspaceRequest {\n    readonly workspaceId: WorkspaceId;\n}',
   },
   {
     name: 'WorkspaceUnpinSessionRequest',
