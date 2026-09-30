@@ -10,6 +10,8 @@ import { defaultWorkspaceDirectory, validateDocumentsDirectory } from './default
 import type {
   WorkspaceArchiveSessionRequest,
   WorkspaceArchiveValue,
+  WorkspaceArchiveWorkspaceRequest,
+  WorkspaceArchivedWorkspacesValue,
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
   WorkspaceDeleteRequest,
@@ -22,6 +24,7 @@ import type {
   WorkspacePinValue,
   WorkspaceRenameRequest,
   WorkspaceUnarchiveSessionRequest,
+  WorkspaceUnarchiveWorkspaceRequest,
   WorkspaceUnpinSessionRequest,
   WorkspaceValue,
 } from './types.ts'
@@ -164,6 +167,26 @@ export class WorkspaceController extends TypertRemoteService {
   @Remote('unarchiveSession')
   unarchiveSession(request: WorkspaceUnarchiveSessionRequest): Promise<WorkspaceArchiveValue> {
     return this.commands.unarchiveSession(request)
+  }
+
+  /**
+   * Hide one known Workspace and every Session it accounts from grouping surfaces.
+   * @param request - Workspace identity to archive and whether to stop its Sessions' work.
+   * @returns the complete resulting archived Workspace set.
+   */
+  @Remote('archiveWorkspace')
+  archiveWorkspace(request: WorkspaceArchiveWorkspaceRequest): Promise<WorkspaceArchivedWorkspacesValue> {
+    return this.commands.archiveWorkspace(request)
+  }
+
+  /**
+   * Restore one archived Workspace and its Sessions to grouping surfaces.
+   * @param request - Workspace identity to unarchive.
+   * @returns the complete resulting archived Workspace set.
+   */
+  @Remote('unarchiveWorkspace')
+  unarchiveWorkspace(request: WorkspaceUnarchiveWorkspaceRequest): Promise<WorkspaceArchivedWorkspacesValue> {
+    return this.commands.unarchiveWorkspace(request)
   }
 
   /**

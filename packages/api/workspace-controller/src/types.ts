@@ -44,6 +44,18 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
       readonly sessionId: SessionId
       readonly activity: readonly SessionActivity[]
     }
+    /**
+     * At least one Session the Workspace accounts still has running work, so
+     * archiving the Workspace was refused without a write; `sessions` names
+     * every active Session and what must stop, in account order.
+     */
+    'workspace/workspace-active': {
+      readonly workspaceId: WorkspaceId
+      readonly sessions: readonly {
+        readonly sessionId: SessionId
+        readonly activity: readonly SessionActivity[]
+      }[]
+    }
     /** The Session or its anchor is not in the Workspace's manual order. */
     'workspace/move-invalid': {
       readonly workspaceId: WorkspaceId
@@ -134,6 +146,29 @@ export interface WorkspaceArchiveValue {
   readonly archivedSessionIds: readonly SessionId[]
 }
 
+/** Workspace requested for archival together with every Session it accounts. */
+export interface WorkspaceArchiveWorkspaceRequest {
+  readonly workspaceId: WorkspaceId
+  /**
+   * Stop the running work of every accounted Session — turns, subagent
+   * descendants, owned background jobs, and active schedules — instead of
+   * refusing the archive as `workspace/workspace-active`. The archive set is
+   * written first and the stops are requested afterwards without being
+   * awaited; the response arrives once every stop request was issued.
+   */
+  readonly stopActivity?: boolean
+}
+
+/** Workspace requested for restoration from the archived Workspace set. */
+export interface WorkspaceUnarchiveWorkspaceRequest {
+  readonly workspaceId: WorkspaceId
+}
+
+/** Complete archived Workspace set after a mutation, in archive order. */
+export interface WorkspaceArchivedWorkspacesValue {
+  readonly archivedWorkspaceIds: readonly WorkspaceId[]
+}
+
 /** Session requested for pinning ahead of unpinned Sessions on grouping surfaces. */
 export interface WorkspacePinSessionRequest {
   readonly sessionId: SessionId
@@ -155,6 +190,8 @@ export interface WorkspaceBaseline {
   readonly archivedSessionIds: readonly SessionId[]
   /** Registry-global pin set, most recently pinned first. */
   readonly pinnedSessionIds: readonly SessionId[]
+  /** Registry-global archived Workspace set in archive order; members keep their `items` row and order slot. */
+  readonly archivedWorkspaceIds: readonly WorkspaceId[]
 }
 
 /** One ordered Workspace change after a generation's baseline. */
@@ -164,6 +201,7 @@ export type WorkspaceFollowIncrement =
   | { readonly type: 'order'; readonly workspaceIds: readonly WorkspaceId[] }
   | { readonly type: 'archived'; readonly archivedSessionIds: readonly SessionId[] }
   | { readonly type: 'pinned'; readonly pinnedSessionIds: readonly SessionId[] }
+  | { readonly type: 'archivedWorkspaces'; readonly archivedWorkspaceIds: readonly WorkspaceId[] }
 
 /** Workspace state stream; every generation starts with exactly one baseline. */
 export type WorkspaceFollowFrame =

@@ -1,10 +1,11 @@
 /**
- * The controller's admission gate for archived Sessions: an archived
- * Session, or a subagent descendant of one, must not run a model step until
- * it is restored. The work a Session still runs is reported and stopped by
- * its owners — the Agent registry (`turn`), the job registry seam (`job`),
- * the Subagent runtime (`subagent`), and the Schedule plugin (`schedule`) —
- * through the Workspace registry's archive-admission events.
+ * The controller's admission gate for archived Sessions: a Session archived
+ * directly or through its archived owning Workspace, or a subagent
+ * descendant of one, must not run a model step until it is restored. The
+ * work a Session still runs is reported and stopped by its owners — the
+ * Agent registry (`turn`), the job registry seam (`job`), the Subagent
+ * runtime (`subagent`), and the Schedule plugin (`schedule`) — through the
+ * Workspace registry's archive-admission events.
  */
 
 import type { Context, Plugin } from '@deepseek-ai/cordis'
@@ -17,8 +18,8 @@ import type {} from '@deepseek-ai/dsh-workspace'
  * registry, Session store, and Workspace registry are available and unwinds
  * with the plugin's fiber. A late waking delivery to an archived Session — a
  * subagent settlement, a queued follow-up — proposes a step the gate rejects,
- * which the loop ends as `blocked` without a request; unarchiving lifts the
- * gate for the whole lineage.
+ * which the loop ends as `blocked` without a request; unarchiving the Session
+ * or its Workspace lifts the gate for the whole lineage.
  */
 export const ArchivedSessionGate: Plugin.Object<void> = {
   name: 'archived-session-gate',
@@ -33,7 +34,9 @@ export const ArchivedSessionGate: Plugin.Object<void> = {
 
 /**
  * Whether the Agent's Session, or a Session above it in its subagent lineage,
- * is archived. Lineage follows the durable header fields through
+ * is archived — in the registry's archived Session set or accounted by an
+ * archived Workspace, as the registry's `isSessionEffectivelyArchived`
+ * decides at every hop. Lineage follows the durable header fields through
  * subagent-origin Sessions only: a fork of an archived Session is an
  * independent conversation.
  * @param ctx - Host context.
@@ -41,15 +44,15 @@ export const ArchivedSessionGate: Plugin.Object<void> = {
  * @returns whether an archived Session owns the step.
  */
 export function underArchivedSession(ctx: Context, agent: Agent): boolean {
-  const archived = ctx.workspaceRegistry.archivedSessionIds
+  const registry = ctx.workspaceRegistry
   let header = agent.session.header
   const visited = new Set<SessionId>()
   while (!visited.has(header.id)) {
-    if (archived.includes(header.id)) return true
+    if (registry.isSessionEffectivelyArchived(header.id)) return true
     visited.add(header.id)
     if (header.origin !== 'subagent' || header.parentSession === undefined) return false
     const parent = ctx.sessions.get(header.parentSession)
-    if (parent === undefined) return archived.includes(header.parentSession)
+    if (parent === undefined) return registry.isSessionEffectivelyArchived(header.parentSession)
     header = parent.header
   }
   return false

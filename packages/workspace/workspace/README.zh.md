@@ -78,6 +78,10 @@ ctx.workspaceRegistry.list() // shows the project, newest first
 
 Workspace 注册不意味着拥有其目录。未来的破坏性文件系统操作必须单独命名、获得明确确认，并执行所有权与安全检查。
 
+### 归档与恢复项目
+
+当项目已经完成但仍需可恢复时归档它：该项目及其下分组的每个会话都会从可见列表中消失，而它的标题、目录、在列表中的位置、会话顺序，以及每个会话自己的置顶与隐藏标志都原样保留。任一可见会话仍有工作在跑的项目不会被藏在这些工作之下：注册表会拒绝并列出这些会话以及各自还在跑的内容；调用方若要求先停止这些工作，注册表会按用户自己的停止操作同样的方式停掉每个列出的会话，然后再归档。当已归档的项目应重新出现时恢复它：它会带着原位的会话回到记录的位置，之前被单独隐藏的会话仍保持隐藏。移除已归档的项目会在同一步中把它从归档集合里去掉。
+
 -----
 
 <a id="understand-the-implementation"></a>
@@ -99,9 +103,11 @@ Workspace 注册不意味着拥有其目录。未来的破坏性文件系统操�
 <a id="api-behavior"></a>
 ### API 行为
 
-该 API 由两个对象负责：`WorkspaceRegistry` 创建、排序与删除项目，管理会话记账，并置顶、取消置顶、归档或恢复会话；`Workspace` 实体暴露显示标题、目录状态与会话投影。置顶要求会话已知且未归档；归档在同一次持久化写入中清除置顶，恢复会话不会恢复置顶。各方法的精确约定见 [src/index.ts](src/index.ts) 与 [src/entity.ts](src/entity.ts)。
+该 API 由两个对象负责：`WorkspaceRegistry` 创建、排序、归档、恢复与删除项目，管理会话记账，并置顶、取消置顶、归档或恢复会话；`Workspace` 实体暴露显示标题、目录状态与会话投影。置顶要求会话已知，且既未被直接归档，也不属于已归档的 Workspace；归档会话在同一次持久化写入中清除置顶，恢复会话不会恢复置顶。各方法的精确约定见 [src/index.ts](src/index.ts) 与 [src/entity.ts](src/entity.ts)。
 
 归档准入是本包声明并派发的两个宿主事件之上的能力接缝：`workspace/session-activity`（waterfall）向已组合的提供方询问某会话还有什么在跑，`workspace/session-stop`（parallel）请它们停止这些工作。`archiveSession(sessionId)` 只询问一次活动 waterfall，对非空答案以 `WorkspaceActiveSessionError` 拒绝，其 `activity` 按族列出各项——键由各提供方自己合并进本包留空的 `SessionActivityKindMap`；`archiveSession(sessionId, { stopActivity: true })` 跳过活动检查，先写入归档，再派发停止事件，因此持久化的归档集合已经拦住停止所引发的每一次唤醒；提供方抛错只记日志，归档保留。调用在每个提供方的停止请求都已发出后返回，被停止的工作自行收敛。两种询问都在存在性检查之后进行，对已归档 id 从不发生。随附的提供方是 Agent 注册表（运行中的回合）、任务注册表接缝（所属任务）、Subagent runtime（运行中的子孙）与 Schedule 插件（活跃提醒）；没有提供方的组合可自由归档。
+
+`archiveWorkspace(workspaceId)` 对该 Workspace 经会话头校验的 `sessionIds` 执行同一套准入：按记账顺序，对每个尚不在会话归档集合中的会话询问一次活动 waterfall，并以 `WorkspaceActiveError` 拒绝，其 `sessions` 列出每个活跃会话及其活动；未知 id 以 `WorkspaceUnknownWorkspaceError` 拒绝。带 `{ stopActivity: true }` 时检查仍会运行以确定要停止谁，先写入已归档 Workspace 集合，再对每个报告了活动的会话派发一次停止事件。`unarchiveWorkspace(workspaceId)` 直接移除 id，不做存在性检查。`owningWorkspaceOf(sessionId)` 在有序投影中扫描记账该会话的唯一 Workspace；`isSessionEffectivelyArchived(sessionId)` 在会话位于会话归档集合中、或其所属 Workspace 已归档时为真——这是所有门禁与分组界面共同参考的唯一推导。
 
 ### 源码地图
 
@@ -115,11 +121,11 @@ Workspace 注册不意味着拥有其目录。未来的破坏性文件系统操�
 
 ### 持久形态
 
-注册表打开 `workspace` 领域（版本 2）：一张以 `WorkspaceId` 为键的 `workspaces` 表，加上一个持有 `workspaceIds`（权威显示顺序）、`archivedSessionIds`、`pinnedSessionIds`、可选的首次使用身份 `defaultWorkspaceId` 与可选 `pendingMutation` 标记的全局状态。归档与置顶集合存储会话 id 字符串，默认值为空，不包含逐项对象或时间戳；置顶数组把最近置顶的 id 放在前面。归档在同一次全局状态写入中清除置顶，但不改变 Workspace 成员关系。取消归档不做会话存在性探测，因为从集合中移除 id 不可能引入未知 id，而归档会在加入前校验会话。
+注册表打开 `workspace` 领域（版本 2）：一张以 `WorkspaceId` 为键的 `workspaces` 表，加上一个持有 `workspaceIds`（权威显示顺序）、`archivedSessionIds`、`pinnedSessionIds`、`archivedWorkspaceIds`、可选的首次使用身份 `defaultWorkspaceId` 与可选 `pendingMutation` 标记的全局状态。三个集合存储 id 字符串，默认值为空，因此每个字段出现之前写入的介质都能原样解析，且不包含逐项对象或时间戳；置顶数组把最近置顶的 id 放在前面。归档会话在同一次全局状态写入中清除置顶，但不改变 Workspace 成员关系。归档 Workspace 只把它的 id 加入 `archivedWorkspaceIds`，别无其他：记录、其 `workspaceIds` 槽位与其 `sessionIds` 记账都不动，其会话自身的标志也绝不写入。删除 Workspace 在移除顺序的同一次写入中把它的 id 从 `archivedWorkspaceIds` 中去掉。两种取消归档都不做存在性探测，因为从集合中移除 id 不可能引入未知 id，而两种归档都会在加入前校验目标。
 
 ### 生命周期
 
-启动时，注册表打开领域、若存在标记则补全被标记的变更、校验已存状态——重复路径、重复会话记账与顺序漂移都会明确报错——并在尚未初始化时先凭持久化头部引导历史、最后写入已初始化标记，因此被中断的引导可以安全恢复。全新空注册表一旦初始化即成为正式状态，绝不会再次引导。
+启动时，注册表打开领域、若存在标记则补全被标记的变更、校验已存状态——重复路径、重复会话记账、顺序漂移，以及重复出现或不在顺序中的已归档 Workspace id 都会明确报错——并在尚未初始化时先凭持久化头部引导历史、最后写入已初始化标记，因此被中断的引导可以安全恢复。全新空注册表一旦初始化即成为正式状态，绝不会再次引导。
 
 ### 失败与恢复
 
@@ -170,7 +176,8 @@ Workspace 注册不意味着拥有其目录。未来的破坏性文件系统操�
 - **只有带记录目录的会话才能加入**——只有记录中带有可解析为项目路径的目录的会话才属于项目；没有目录的会话保持 Ungrouped，来自其他目录的会话无法移入。
 - **外部变更延迟可见**——如果另一进程删除或损坏目录，项目只能在下次刷新或重启后反映出来。
 - **归档与取消归档执行不同的会话校验**——恢复只是从归档集合中移除 id，因此会话已不存在的条目仍能取消归档，也不会留下未知引用；对未归档 id 执行恢复不写盘即完成，而 `archiveSession` 会拒绝既非实时也未持久化的会话。
-- **活动检查与归档写入不是一个原子步骤**——在提供方作答与持久化写入之间开始的回合会在隐藏状态下运行，`agent/pre-step` 先于该写入的每个模型步连同其工具调用照常执行；API Session Controller 的门禁把写入之后提出的第一步以 `blocked` 收口，因此暴露面以该写入的时延为界，实际上是一个模型步。
+- **活动检查与归档写入不是一个原子步骤**——在提供方作答与持久化写入之间开始的回合会在隐藏状态下运行，`agent/pre-step` 先于该写入的每个模型步连同其工具调用照常执行；API Session Controller 的门禁把写入之后提出的第一步以 `blocked` 收口，因此暴露面以该写入的时延为界，实际上是一个模型步。对 Workspace 而言，这个窗口横跨每个记账会话各一次的活动询问，它们在注册表队列内顺序执行。
+- **有效归档是推导出来的，不是写入的**——已归档 workspace 中的会话被隐藏并被门禁拦截，却不会进入 `archivedSessionIds`；只有 `isSessionEffectivelyArchived` 会报告它们，因此仅读取 `archivedSessionIds` 的消费方会漏掉它们；而离开该 workspace 投影的会话——其会话头不再通过校验，或被 detach——无需任何写入就不再算作已归档。
 - **重新添加目录从空开始**——移除后再次添加同一目录会创建空会话列表的新项目；旧会话不会自动回来。
 
 <a id="dev-note"></a>

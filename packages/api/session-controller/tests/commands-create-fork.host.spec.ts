@@ -89,6 +89,7 @@ describe('Session creation failures', () => {
     failed.provide('workspaceRegistry', {
       get: () => workspace,
       list: () => [workspace],
+      archivedWorkspaceIds: [],
     } as never)
     const failedController = new SessionCommandController(
       failed,
@@ -100,6 +101,31 @@ describe('Session creation failures', () => {
       workspaceId: workspace.id,
     }), 'session/workspace-attach-failed')
     await failed.fiber.dispose()
+  })
+
+  it('refuses to create a Session in an archived Workspace before allocating it', async () => {
+    const ctx = await baseContext()
+    const attachSession = vi.fn()
+    const workspace = {
+      id: 'workspace-archived' as WorkspaceId,
+      path: '/workspace',
+      attachSession,
+    } as unknown as Workspace
+    ctx.provide('workspaceRegistry', {
+      get: () => workspace,
+      list: () => [workspace],
+      archivedWorkspaceIds: [workspace.id],
+    } as never)
+    const ensureSession = vi.fn()
+    const controller = new SessionCommandController(ctx, controllerAgents({ ensureSession }), '/default')
+
+    await expect(controller.create({ workspaceId: workspace.id })).rejects.toMatchObject({
+      code: 'workspace/archived',
+      details: { workspaceId: 'workspace-archived' },
+    })
+    expect(ensureSession).not.toHaveBeenCalled()
+    expect(attachSession).not.toHaveBeenCalled()
+    await ctx.fiber.dispose()
   })
 
   it.each([
@@ -258,7 +284,7 @@ describe('Session fork failures', () => {
       sessionIds: [source.id],
       attachSession: () => Promise.reject(new Error('workspace write failed')),
     } as unknown as Workspace
-    ctx.provide('workspaceRegistry', { list: () => [workspace] } as never)
+    ctx.provide('workspaceRegistry', { list: () => [workspace], archivedWorkspaceIds: [] } as never)
     const create = vi.spyOn(ctx.agents, 'create').mockImplementation(
       (options: CreateAgentOptions) => Promise.resolve(resolvedHandle(ctx, options.sessionId)),
     )
@@ -288,6 +314,31 @@ describe('Session fork failures', () => {
     const options = create.mock.calls[0]?.[0]
     if (options === undefined) throw new Error('Agent creation was not attempted')
     expect(options.meta?.agentPreset).toBe('minimal')
+    await ctx.fiber.dispose()
+  })
+
+  it('refuses to fork a Session whose owning Workspace is archived before creating the child', async () => {
+    const ctx = await baseContext()
+    const source = completedSession(ctx, 'archived-owner-source', '/workspace')
+    const attachSession = vi.fn()
+    const workspace = {
+      id: 'workspace-archived' as WorkspaceId,
+      sessionIds: [source.id],
+      attachSession,
+    } as unknown as Workspace
+    ctx.provide('workspaceRegistry', {
+      list: () => [workspace],
+      archivedWorkspaceIds: [workspace.id],
+    } as never)
+    const create = vi.spyOn(ctx.agents, 'create')
+    const controller = new SessionCommandController(ctx, controllerAgents(), '/default')
+
+    await expect(controller.fork({ sessionId: source.id })).rejects.toMatchObject({
+      code: 'workspace/archived',
+      details: { workspaceId: 'workspace-archived' },
+    })
+    expect(create).not.toHaveBeenCalled()
+    expect(attachSession).not.toHaveBeenCalled()
     await ctx.fiber.dispose()
   })
 })

@@ -56,7 +56,7 @@ Session 对象还承载本地提交回显：`session.beginSubmission` 在调用�
 
 面向用户调用的 `skills/list` 元数据包含胜出提供方可选的指令文件 `path`。输入框可据此预览文件，无需加载每个 skill 的正文或激活冷态 Agent。
 
-Fork 复制 `atSeq` 所选的精确事件前缀，包含切点事件，允许在开放轮次内截取。子会话在合成的 fork 结果和结束事件之前记录继承标记。省略 `atSeq` 时选择最近已结束轮次及其独立尾部，在下一轮次或排队输入之前停止；不存在的事件会被拒绝。聊天操作选择已结束轮次。
+Fork 复制 `atSeq` 所选的精确事件前缀，包含切点事件，允许在开放轮次内截取。子会话在合成的 fork 结果和结束事件之前记录继承标记。省略 `atSeq` 时选择最近已结束轮次及其独立尾部，在下一轮次或排队输入之前停止；不存在的事件会被拒绝。聊天操作选择已结束轮次。已归档的 Workspace 不接受新会话：指名它的 `create({ workspaceId })`，以及所属 Workspace——即子会话将要挂接的那个，源会话是子代理时沿子代理血缘解析——已归档的会话的 `fork`，都会在创建任何会话或 Agent 之前以携带 Workspace id 的 `workspace/archived` 拒绝。
 
 恢复会话时若已有写句柄占用，返回 `session/writer-held`，并携带会话 id；其他恢复失败仍返回 `gateway/internal`。
 
@@ -68,7 +68,7 @@ Client 的首次 `follow`、重连首屏与 `loadOlder()` 至少请求 50 条以
 
 附件授权读取内置 Session 事件声明的内容字段与已完成的 assistant 流块，包括扁平的 V4 tool 角色消息。未知事件载荷与无关字段不能授权附件读取。
 
-本控制器通过 `ctx.plugin` 组合 `ArchivedSessionGate`：在 Agent 注册表、Session store 与 Workspace 注册表就绪后加载，随控制器一起释放。它的 `agent/pre-step` 监听器会拒绝为已归档会话或其子代理子孙——从 Session header 的血缘字段读出，从不包括 fork——提出的步骤，因此迟到的唤醒投递会让该回合以 `blocked` 收口而不发出模型请求；取消归档即为整条血缘解除门禁。已归档会话仍在跑的工作由各自的 owner 通过 Workspace 注册表的归档准入（[接缝](../../workspace/workspace/README.zh.md)）报告与停止：运行中的回合由 [Agent 注册表](../../core/agent/README.zh.md)负责，所属任务由[任务注册表接缝](../../jobs/jobs/README.zh.md)负责，子代理子孙由 [Subagent](../../subagent/subagent/README.zh.md) runtime 负责，提醒由 [Schedule](../../schedule/schedule/README.zh.md) 插件负责；本控制器自己不报告任何内容。
+本控制器通过 `ctx.plugin` 组合 `ArchivedSessionGate`：在 Agent 注册表、Session store 与 Workspace 注册表就绪后加载，随控制器一起释放。它的 `agent/pre-step` 监听器会拒绝为已归档会话或其子代理子孙——从 Session header 的血缘字段读出，从不包括 fork——提出的步骤，因此迟到的唤醒投递会让该回合以 `blocked` 收口而不发出模型请求；取消归档即为整条血缘解除门禁。会话位于注册表的已归档会话集合中，或记账它的 Workspace 已归档时，即视为已归档，由注册表的 `isSessionEffectivelyArchived` 在每一跳血缘上判定，因此取消归档 Workspace 无需任何逐会话写入即可解除门禁。已归档会话仍在跑的工作由各自的 owner 通过 Workspace 注册表的归档准入（[接缝](../../workspace/workspace/README.zh.md)）报告与停止：运行中的回合由 [Agent 注册表](../../core/agent/README.zh.md)负责，所属任务由[任务注册表接缝](../../jobs/jobs/README.zh.md)负责，子代理子孙由 [Subagent](../../subagent/subagent/README.zh.md) runtime 负责，提醒由 [Schedule](../../schedule/schedule/README.zh.md) 插件负责；本控制器自己不报告任何内容。
 
 <a id="client-references"></a>
 ## Client 引用
