@@ -6,11 +6,12 @@
  */
 
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { SessionActivity, WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
+import type { SessionActivity, WorkspaceAppearance, WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 
 export type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 export type {
   SessionActivity, SessionActivityItem, SessionActivityKind, SessionActivityKindMap,
+  WorkspaceAppearance, WorkspaceColor, WorkspaceEmojiRef, WorkspaceIconId, WorkspaceIconRef,
 } from '@deepseek-ai/dsh-workspace/types'
 export type { DirectoryEntry, DirectoryListing } from '@deepseek-ai/dsh-host-directory-picker/types'
 
@@ -29,6 +30,8 @@ export interface WorkspaceView {
    * canonical-cwd match.
    */
   readonly assignedSessionIds: readonly SessionId[]
+  /** User-chosen accent color and icon; absent when both are the default. */
+  readonly appearance?: WorkspaceAppearance
   /** ISO-8601 creation instant. */
   readonly createdAt: string
   /** ISO-8601 last-mutation instant. */
@@ -99,6 +102,13 @@ export interface WorkspaceRenameRequest {
 /** Workspace mutation returning the complete changed row. */
 export interface WorkspaceValue {
   readonly workspace: WorkspaceView
+}
+
+/** Workspace accent color and icon replacement; an empty `appearance` resets both. */
+export interface WorkspaceSetAppearanceRequest {
+  readonly workspaceId: WorkspaceId
+  /** Fields to store; an omitted field is cleared, not kept. */
+  readonly appearance: WorkspaceAppearance
 }
 
 /** Workspace registration deletion. */

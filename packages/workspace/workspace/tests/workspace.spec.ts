@@ -24,8 +24,12 @@ import WorkspaceRegistry, {
   WorkspaceOrderInvalidError,
   WorkspaceUnknownSessionError,
   WorkspaceUnknownWorkspaceError,
+  workspaceIconRef,
 } from '../src/index.ts'
 import type { WorkspaceDomainState, WorkspaceRecord } from '../src/index.ts'
+
+/** The one emoji the appearance tests paint with, minted the way product code must. */
+const TARGET = workspaceIconRef('emoji:🎯')
 import { defaultWorkspaceTitle, fullyQualifiedWorkspacePath } from '../src/paths.ts'
 
 const DOMAIN_VERSION = 2
@@ -171,8 +175,11 @@ type StoredDomainState = z.input<typeof workspaceDomainState>
 /** A record as written to the medium; media written before `assignedSessionIds` existed omit the field. */
 type StoredRecord = z.input<typeof workspaceRecord>
 
+/** A record the medium may hold but the schema must refuse. */
+type CorruptRecord = Record<string, unknown>
+
 function storedPool(
-  entries: Array<[string, StoredRecord]>,
+  entries: Array<[string, StoredRecord | CorruptRecord]>,
   state: StoredDomainState,
 ): MemoryMediaPool {
   const pool = new MemoryMediaPool()
@@ -931,6 +938,74 @@ describe('workspace mutation and status', () => {
     await writeFile(dir, 'now a file')
     expect(await workspace.status()).toBe('missing-dir')
     expect(registry.get(workspace.id)).toBe(workspace)
+  })
+})
+
+describe('workspace appearance', () => {
+  it('sets, replaces, and clears the appearance durably, skipping writes for an unchanged value', async () => {
+    const dir = await makeDir('appearance')
+    const h = await harness()
+    const workspace = await h.registry.create(dir)
+    expect(workspace.appearance).toBeUndefined()
+    const written = h.changes.length
+
+    await workspace.setAppearance({ color: 'blue', icon: TARGET })
+    expect(workspace.appearance).toEqual({ color: 'blue', icon: TARGET })
+    expect(storedRecord(h.pool, workspace.id).appearance).toEqual({ color: 'blue', icon: TARGET })
+    expect(h.changes).toHaveLength(written + 1)
+
+    // The same value, in either key order, writes nothing.
+    await workspace.setAppearance({ icon: TARGET, color: 'blue' })
+    expect(h.changes).toHaveLength(written + 1)
+
+    // Dropping one field is a change; the other field is not kept implicitly.
+    await workspace.setAppearance({ icon: 'icon:code' })
+    expect(workspace.appearance).toEqual({ icon: 'icon:code' })
+    expect(storedRecord(h.pool, workspace.id).appearance).toEqual({ icon: 'icon:code' })
+    expect(h.changes).toHaveLength(written + 2)
+
+    // A reset removes the field from the stored record instead of storing an empty object.
+    await workspace.setAppearance({})
+    expect(workspace.appearance).toBeUndefined()
+    expect(storedRecord(h.pool, workspace.id)).not.toHaveProperty('appearance')
+    expect(h.changes).toHaveLength(written + 3)
+    await workspace.setAppearance({})
+    expect(h.changes).toHaveLength(written + 3)
+
+    await h.ctx.fiber.dispose()
+    const reopened = await harness({ pool: h.pool })
+    expect(reopened.registry.get(workspace.id)?.appearance).toBeUndefined()
+  })
+
+  it('parses a record written before appearance existed and does not stamp the field at its next write', async () => {
+    const dir = await makeDir('appearance-legacy')
+    const id = WorkspaceId('00000000-0000-4000-8000-000000000040')
+    const pool = storedPool([[id, record(dir, [])]], { initialized: true, workspaceIds: [id] })
+    const h = await harness({ pool })
+    const workspace = h.registry.get(id)!
+    expect(workspace.appearance).toBeUndefined()
+    await workspace.setTitle('written')
+    expect(storedRecord(pool, id)).not.toHaveProperty('appearance')
+    await workspace.setAppearance({ color: 'green' })
+    expect(storedRecord(pool, id).appearance).toEqual({ color: 'green' })
+  })
+
+  it('refuses a stored appearance outside the grammar at the durable boundary', async () => {
+    const dir = await makeDir('appearance-corrupt')
+    const id = WorkspaceId('00000000-0000-4000-8000-000000000041')
+    const corrupt: unknown[] = [
+      { color: 'pink' },
+      { icon: 'icon:nope' },
+      { icon: 'emoji:🎯🎯' },
+      { icon: 'emoji:' },
+      { color: 'blue', label: 'extra' },
+      'blue',
+    ]
+    for (const appearance of corrupt) {
+      const pool = storedPool([[id, { ...record(dir, []), appearance }]], { initialized: true, workspaceIds: [id] })
+      await expect(harness({ pool }))
+        .rejects.toThrow(`domain 'workspace': stored record '${id}' in table 'workspaces' does not match its schema`)
+    }
   })
 })
 

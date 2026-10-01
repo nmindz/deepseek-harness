@@ -20,6 +20,7 @@ import type {
   WorkspacePinSessionRequest,
   WorkspacePinValue,
   WorkspaceRenameRequest,
+  WorkspaceSetAppearanceRequest,
   WorkspaceUnarchiveSessionRequest,
   WorkspaceUnarchiveWorkspaceRequest,
   WorkspaceUnpinSessionRequest,
@@ -81,6 +82,8 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
     Promise.resolve(remoteOk({ workspace: workspace(request.path.split('/').pop() ?? 'workspace'), created: true }))
   onRename: (request: WorkspaceRenameRequest) => Promise<RemoteResult<WorkspaceValue>> = request =>
     Promise.resolve(remoteOk({ workspace: { ...workspace(String(request.workspaceId)), title: request.title } }))
+  onSetAppearance: (request: WorkspaceSetAppearanceRequest) => Promise<RemoteResult<WorkspaceValue>> = request =>
+    Promise.resolve(remoteOk({ workspace: { ...workspace(String(request.workspaceId)), appearance: request.appearance } }))
   onDelete: (_request: WorkspaceDeleteRequest) => Promise<RemoteResult<WorkspaceDeleteValue>> = () =>
     Promise.resolve(remoteOk({ deleted: true }))
   onInsertBefore: (
@@ -132,6 +135,11 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
   rename(request: WorkspaceRenameRequest): Promise<RemoteResult<WorkspaceValue>> {
     this.record('rename', request)
     return this.onRename(request)
+  }
+
+  setAppearance(request: WorkspaceSetAppearanceRequest): Promise<RemoteResult<WorkspaceValue>> {
+    this.record('setAppearance', request)
+    return this.onSetAppearance(request)
   }
 
   delete(request: WorkspaceDeleteRequest): Promise<RemoteResult<WorkspaceDeleteValue>> {
@@ -337,6 +345,39 @@ describe('ClientWorkspaceModel', () => {
     secondGate.resolve(workspaceError(new RemoteError('workspace/not-found', 'second rejected', { workspaceId: wid('two') })))
     await expect(second).resolves.toMatchObject({ ok: false })
     expect(model.getSnapshot().items.map(item => item.workspaceId)).toEqual(['one', 'two', 'three'])
+  })
+
+  it('merges the row an appearance change returns and sends the complete appearance as one request', async () => {
+    const remote = new FakeWorkspaceRemote()
+    const model = modelFor(remote)
+    baseline(model, [workspace('one'), workspace('two')])
+
+    const painted = await model.setAppearance(wid('one'), { color: 'amber', icon: 'icon:code' })
+    expect(painted).toMatchObject({ ok: true })
+    expect(remote.calls.at(-1)).toEqual({
+      method: 'setAppearance', request: { workspaceId: 'one', appearance: { color: 'amber', icon: 'icon:code' } },
+    })
+    expect(model.getSnapshot().items.find(item => item.workspaceId === wid('one'))?.appearance)
+      .toEqual({ color: 'amber', icon: 'icon:code' })
+    expect(model.getSnapshot().items.find(item => item.workspaceId === wid('two'))?.appearance).toBeUndefined()
+
+    // A reset echoes a row without the field; the merge drops it rather than keeping the stale value.
+    remote.onSetAppearance = request => Promise.resolve(remoteOk({ workspace: workspace(String(request.workspaceId)) }))
+    await expect(model.setAppearance(wid('one'), {})).resolves.toMatchObject({ ok: true })
+    expect(remote.calls.at(-1)).toEqual({ method: 'setAppearance', request: { workspaceId: 'one', appearance: {} } })
+    expect(model.getSnapshot().items.find(item => item.workspaceId === wid('one'))).not.toHaveProperty('appearance')
+  })
+
+  it('leaves the projection unchanged when an appearance change is refused', async () => {
+    const remote = new FakeWorkspaceRemote()
+    const model = modelFor(remote)
+    baseline(model, [workspace('one')])
+    remote.onSetAppearance = () => Promise.resolve(workspaceError(
+      new RemoteError('gateway/bad-request', 'Workspace appearance is invalid', {}),
+    ))
+    const before = model.getSnapshot()
+    await expect(model.setAppearance(wid('one'), { color: 'red' })).resolves.toMatchObject({ ok: false })
+    expect(model.getSnapshot()).toBe(before)
   })
 
   it('merges the destination row a move returns and sends an Ungrouped move without a workspaceId', async () => {

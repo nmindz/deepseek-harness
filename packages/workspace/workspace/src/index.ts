@@ -22,8 +22,10 @@ import type { SessionActivity, Workspace, WorkspaceId as WorkspaceIdBrand } from
 
 export type {
   AttachSessionOptions, SessionActivity, SessionActivityItem, SessionActivityKind, SessionActivityKindMap, Workspace,
+  WorkspaceAppearance, WorkspaceColor, WorkspaceEmojiRef, WorkspaceIconId, WorkspaceIconRef,
 } from './types.ts'
-export { workspaceDomainState, workspaceRecord, workspaceDomainSpec } from './spec.ts'
+export { WORKSPACE_COLORS, WORKSPACE_ICON_IDS, isWorkspaceIconRef, workspaceIconRef } from './appearance.ts'
+export { workspaceAppearance, workspaceDomainState, workspaceRecord, workspaceDomainSpec } from './spec.ts'
 export type { WorkspaceDomainState, WorkspaceRecord } from './spec.ts'
 export { realpathNormalize } from './paths.ts'
 

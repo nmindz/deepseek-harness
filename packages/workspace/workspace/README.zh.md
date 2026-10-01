@@ -111,6 +111,8 @@ Workspace 注册不意味着拥有其目录。未来的破坏性文件系统操�
 
 `moveSession(sessionId, workspaceId?)` 把一个会话在项目之间移动或移出所有项目，并返回 `{ previousWorkspaceId }`。目标必须已注册（`WorkspaceUnknownWorkspaceError`）且未归档（`WorkspaceArchivedError`），会话必须处于运行时或已持久化（`WorkspaceUnknownSessionError`）；所有检查都在任何写入之前完成。当前持有者是持久化记账中记有该会话的项目，即使 cwd 过滤把它隐藏；已被目标持有的会话，或省略目标时本就 Ungrouped 的会话，不写入即返回。否则先写入持有者的 detach，再写入目标的 attach，两者都在注册表操作链上串行，因此中断只会让会话变成 Ungrouped，绝不会被记账两次。目标通过 `attachSession(sessionId, { assigned: true })` 附加：会话头必须存在，但不比较其 cwd，也不要求它可解析；id 被前置到 `sessionIds` 并记入 `assignedSessionIds`，直到下一次移动或 detach 之前始终是成员；不带该选项的 `attachSession` 保持 cwd 相等规则。`Workspace.assignedSessionIds` 暴露指派集合，`Workspace.sessionIds` 返回每个已指派 id，加上规范 cwd 等于项目路径的其他每个已记账 id。移动不触碰置顶与归档集合。
 
+`setAppearance(appearance)` 经由同一条 `mutate` 路径替换项目的用户自选强调色与图标，因此 `updatedAt` 会推进，且会执行被过滤候选的修剪。`appearance.color` 是 `WORKSPACE_COLORS` 之一（`blue`、`green`、`amber`、`red`、`neutral`）；`appearance.icon` 要么是 `WORKSPACE_ICON_IDS` 之一的 `icon:<id>`，要么是 `emoji:<cluster>`，其载荷必须恰好是一个扩展字素簇（`Intl.Segmenter`，根区域设置），不超过 16 个 UTF-16 码元，且不含控制字符——`isWorkspaceIconRef` 是唯一的检查，`emoji:` 变体就是它铸造的带品牌 `WorkspaceEmojiRef`。空对象通过删除存储键同时清除两个字段；与当前值相同的值不写入即完成。两个字段都未设置时 `Workspace.appearance` 为 `undefined`。实体信任其调用方：`workspaceAppearance` zod 模式为线上与持久化边界导出，Workspace Controller 在调用前先运行它。
+
 ### 源码地图
 
 | 文件 | 职责 |
@@ -119,11 +121,12 @@ Workspace 注册不意味着拥有其目录。未来的破坏性文件系统操�
 | [`src/entity.ts`](src/entity.ts) | 包私有 `Workspace` 实现及其唯一的 `mutate` 写入路径 |
 | [`src/spec.ts`](src/spec.ts) | 领域声明：记录 schema、注册表状态、`defineDomain` 规范 |
 | [`src/types.ts`](src/types.ts) | 公开 `Workspace` 接口与 `WorkspaceId` 品牌 |
+| [`src/appearance.ts`](src/appearance.ts) | 强调调色板、精选字形 id，以及 `isWorkspaceIconRef` 语法检查 |
 | [`src/paths.ts`](src/paths.ts) | `realpath` 唯一性规范 |
 
 ### 持久形态
 
-注册表打开 `workspace` 领域（版本 2）：一张以 `WorkspaceId` 为键的 `workspaces` 表——每条记录携带其规范 `path`、`title`、有序的 `sessionIds` 记账、`assignedSessionIds`（显式移入的会话，始终是 `sessionIds` 的子集，默认值为空，因此更早的记录能原样解析）与时间戳——加上一个持有 `workspaceIds`（权威显示顺序）、`archivedSessionIds`、`pinnedSessionIds`、`archivedWorkspaceIds`、可选的首次使用身份 `defaultWorkspaceId` 与可选 `pendingMutation` 标记的全局状态。三个集合存储 id 字符串，默认值为空，因此每个字段出现之前写入的介质都能原样解析，且不包含逐项对象或时间戳；置顶数组把最近置顶的 id 放在前面。归档会话在同一次全局状态写入中清除置顶，但不改变 Workspace 成员关系。归档 Workspace 只把它的 id 加入 `archivedWorkspaceIds`，别无其他：记录、其 `workspaceIds` 槽位与其 `sessionIds` 记账都不动，其会话自身的标志也绝不写入。删除 Workspace 在移除顺序的同一次写入中把它的 id 从 `archivedWorkspaceIds` 中去掉。两种取消归档都不做存在性探测，因为从集合中移除 id 不可能引入未知 id，而两种归档都会在加入前校验目标。
+注册表打开 `workspace` 领域（版本 2）：一张以 `WorkspaceId` 为键的 `workspaces` 表——每条记录携带其规范 `path`、`title`、有序的 `sessionIds` 记账、`assignedSessionIds`（显式移入的会话，始终是 `sessionIds` 的子集，默认值为空，因此更早的记录能原样解析）、可选的 `appearance`（调色板中的 `color` 与符合 `icon:`/`emoji:` 语法的 `icon`，每个字段为 `exactOptional`，不接受其他键；两者都为默认时该字段不存在，因此更早的记录能原样解析）与时间戳——加上一个持有 `workspaceIds`（权威显示顺序）、`archivedSessionIds`、`pinnedSessionIds`、`archivedWorkspaceIds`、可选的首次使用身份 `defaultWorkspaceId` 与可选 `pendingMutation` 标记的全局状态。三个集合存储 id 字符串，默认值为空，因此每个字段出现之前写入的介质都能原样解析，且不包含逐项对象或时间戳；置顶数组把最近置顶的 id 放在前面。归档会话在同一次全局状态写入中清除置顶，但不改变 Workspace 成员关系。归档 Workspace 只把它的 id 加入 `archivedWorkspaceIds`，别无其他：记录、其 `workspaceIds` 槽位与其 `sessionIds` 记账都不动，其会话自身的标志也绝不写入。删除 Workspace 在移除顺序的同一次写入中把它的 id 从 `archivedWorkspaceIds` 中去掉。两种取消归档都不做存在性探测，因为从集合中移除 id 不可能引入未知 id，而两种归档都会在加入前校验目标。
 
 ### 生命周期
 

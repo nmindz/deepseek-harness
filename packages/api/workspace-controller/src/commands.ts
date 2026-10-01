@@ -12,6 +12,7 @@ import {
   WorkspaceOrderInvalidError,
   WorkspaceUnknownSessionError,
   WorkspaceUnknownWorkspaceError,
+  workspaceAppearance,
 } from '@deepseek-ai/dsh-workspace'
 import { RemoteError, remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
 import { workspaceView } from './feed.ts'
@@ -32,6 +33,7 @@ import type {
   WorkspacePinSessionRequest,
   WorkspacePinValue,
   WorkspaceRenameRequest,
+  WorkspaceSetAppearanceRequest,
   WorkspaceUnarchiveSessionRequest,
   WorkspaceUnarchiveWorkspaceRequest,
   WorkspaceUnpinSessionRequest,
@@ -94,6 +96,32 @@ export class WorkspaceCommands {
         }
         await workspace.setTitle(title)
       }
+      return { workspace: workspaceView(workspace) }
+    })
+  }
+
+  /**
+   * Replace one Workspace's accent color and icon. The payload is validated
+   * against the domain's `workspaceAppearance` schema after the Workspace is
+   * found: a color outside the palette, an icon outside the grammar, or an
+   * unknown key fails as `gateway/bad-request` without a write. An empty
+   * object clears both fields.
+   * @param request - Workspace identity and the complete appearance to store.
+   * @returns the updated Workspace projection.
+   */
+  setAppearance(request: WorkspaceSetAppearanceRequest): Promise<WorkspaceValue> {
+    return this.enqueue(async () => {
+      const workspace = this.requireWorkspace(request.workspaceId)
+      const parsed = workspaceAppearance.safeParse(request.appearance)
+      if (!parsed.success) {
+        throw new RemoteError(
+          'gateway/bad-request',
+          `Workspace appearance is invalid: ${parsed.error.issues.map(issue => issue.message).join('; ')}`,
+          {},
+          { cause: parsed.error },
+        )
+      }
+      await workspace.setAppearance(parsed.data)
       return { workspace: workspaceView(workspace) }
     })
   }

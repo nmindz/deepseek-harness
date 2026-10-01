@@ -25,6 +25,7 @@ import type {
   WorkspacePinSessionRequest,
   WorkspacePinValue,
   WorkspaceRenameRequest,
+  WorkspaceSetAppearanceRequest,
   WorkspaceUnarchiveSessionRequest,
   WorkspaceUnarchiveWorkspaceRequest,
   WorkspaceUnpinSessionRequest,
@@ -32,6 +33,7 @@ import type {
 } from './types.ts'
 
 export type * from './types.ts'
+export { WORKSPACE_COLORS, WORKSPACE_ICON_IDS, isWorkspaceIconRef, workspaceIconRef } from './appearance.ts'
 export { DirectoryPickerController } from './directory-picker.ts'
 
 /** First-use directory policy for the Host account. */
@@ -119,6 +121,18 @@ export class WorkspaceController extends TypertRemoteService {
   @Remote('rename')
   rename(request: WorkspaceRenameRequest): Promise<WorkspaceValue> {
     return this.commands.rename(request)
+  }
+
+  /**
+   * Replace one Workspace's accent color and icon; an empty `appearance`
+   * resets both. A payload outside the palette or icon grammar fails as
+   * `gateway/bad-request`, an unknown Workspace as `workspace/not-found`.
+   * @param request - Workspace identity and the complete appearance to store.
+   * @returns the updated complete Workspace row.
+   */
+  @Remote('setAppearance')
+  setAppearance(request: WorkspaceSetAppearanceRequest): Promise<WorkspaceValue> {
+    return this.commands.setAppearance(request)
   }
 
   /**

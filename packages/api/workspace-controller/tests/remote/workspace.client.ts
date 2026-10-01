@@ -26,6 +26,7 @@ import type {
   WorkspacePinSessionRequest,
   WorkspacePinValue,
   WorkspaceRenameRequest,
+  WorkspaceSetAppearanceRequest,
   WorkspaceUnarchiveSessionRequest,
   WorkspaceUnarchiveWorkspaceRequest,
   WorkspaceUnpinSessionRequest,
@@ -105,6 +106,12 @@ export const workspaceWorld: RemoteTable = {
     }),
     'workspace/rename': (request: WorkspaceRenameRequest): RemoteResult<WorkspaceValue> => ok({
       workspace: workspace(String(request.workspaceId), { title: request.title }),
+    }),
+    'workspace/setAppearance': (request: WorkspaceSetAppearanceRequest): RemoteResult<WorkspaceValue> => ok({
+      workspace: workspace(
+        String(request.workspaceId),
+        Object.keys(request.appearance).length === 0 ? {} : { appearance: request.appearance },
+      ),
     }),
     'workspace/delete': (_request: WorkspaceDeleteRequest): RemoteResult<WorkspaceDeleteValue> => ok({ deleted: true }),
     'workspace/insertBefore': (request: WorkspaceInsertBeforeRequest): RemoteResult<WorkspaceOrderValue> => ok({ workspaceIds: [request.workspaceId] }),

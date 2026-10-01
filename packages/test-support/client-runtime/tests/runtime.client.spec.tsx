@@ -877,12 +877,28 @@ describe('workspaces action face', () => {
     expect(movedOut).toEqual({ previousWorkspaceId: 'wb' })
     expect(ws.list.getSnapshot().items.map(item => item.sessionIds)).toEqual([[], ['s8']])
     expect(await ws.moveSession('unknown' as SessionId)).toEqual({})
+    // Default appearance mirrors the production effect on the list state: the
+    // matching row carries the value, an empty object removes the field, and
+    // an unknown row yields a minimal view without touching the list.
+    const painted = await ws.setAppearance('wb' as WorkspaceId, { color: 'blue', icon: 'icon:code' })
+    expect(painted).toMatchObject({ workspaceId: 'wb', appearance: { color: 'blue', icon: 'icon:code' } })
+    expect(ws.list.getSnapshot().items.map(item => item.appearance)).toEqual([undefined, { color: 'blue', icon: 'icon:code' }])
+    expect(await ws.setAppearance('wb' as WorkspaceId, {})).not.toHaveProperty('appearance')
+    expect(ws.list.getSnapshot().items[1]).not.toHaveProperty('appearance')
+    const untouched = ws.list.getSnapshot().items
+    expect(await ws.setAppearance('unknown' as WorkspaceId, { color: 'red' }))
+      .toEqual({ workspaceId: 'unknown', title: '', path: '', sessionIds: [], assignedSessionIds: [], appearance: { color: 'red' }, createdAt: '', updatedAt: '' })
+    expect(await ws.setAppearance('unknown' as WorkspaceId, {}))
+      .toEqual({ workspaceId: 'unknown', title: '', path: '', sessionIds: [], assignedSessionIds: [], createdAt: '', updatedAt: '' })
+    expect(ws.list.getSnapshot().items).toEqual(untouched)
     expect(ws.calls.map(c => c.method)).toEqual(
       ['create', 'create', 'rename', 'delete', 'insertBefore', 'insertSessionBefore',
         'archiveSession', 'archiveSession', 'unarchiveSession',
         'archiveWorkspace', 'archiveWorkspace', 'unarchiveWorkspace',
-        'moveSession', 'moveSession', 'moveSession'])
-    expect(ws.calls.at(-6)).toEqual({ method: 'archiveWorkspace', args: ['w1', { stopActivity: true }] })
+        'moveSession', 'moveSession', 'moveSession',
+        'setAppearance', 'setAppearance', 'setAppearance', 'setAppearance'])
+    expect(ws.calls.at(-10)).toEqual({ method: 'archiveWorkspace', args: ['w1', { stopActivity: true }] })
+    expect(ws.calls.at(-4)).toEqual({ method: 'setAppearance', args: ['wb', { color: 'blue', icon: 'icon:code' }] })
 
     ws.stub('create', () => Promise.resolve({ workspaceId: 'ws-x', title: 'X', path: '/x', sessionIds: [] } as never))
     ws.stub('rename', () => Promise.resolve({ workspaceId: 'w1', title: 'S', path: '/s', sessionIds: [] } as never))
@@ -895,6 +911,7 @@ describe('workspaces action face', () => {
     ws.stub('archiveWorkspace', () => Promise.resolve())
     ws.stub('unarchiveWorkspace', () => Promise.resolve())
     ws.stub('moveSession', () => Promise.resolve({ previousWorkspaceId: 'stubbed' as WorkspaceId }))
+    ws.stub('setAppearance', () => Promise.resolve({ workspaceId: 'w1', title: 'P', path: '/p', sessionIds: [] } as never))
     expect((await ws.create({ path: '/y' })).title).toBe('X')
     expect((await ws.rename('w1' as WorkspaceId, 'z')).title).toBe('S')
     await ws.delete('w1' as WorkspaceId)
@@ -912,6 +929,8 @@ describe('workspaces action face', () => {
     expect(ws.list.getSnapshot().archivedWorkspaceIds).toEqual(['w1'])
     const stubbedMove = ws.list.getSnapshot().items
     expect(await ws.moveSession('s8' as SessionId, 'wa' as WorkspaceId)).toEqual({ previousWorkspaceId: 'stubbed' })
+    expect(ws.list.getSnapshot().items).toBe(stubbedMove)
+    expect((await ws.setAppearance('wa' as WorkspaceId, { color: 'green' })).title).toBe('P')
     expect(ws.list.getSnapshot().items).toBe(stubbedMove)
     await runtime.dispose()
   })

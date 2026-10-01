@@ -27,6 +27,7 @@ export function workspaceView(workspace: Workspace): WorkspaceView {
     title: workspace.title,
     sessionIds: [...workspace.sessionIds],
     assignedSessionIds: [...workspace.assignedSessionIds],
+    ...workspace.appearance === undefined ? {} : { appearance: { ...workspace.appearance } },
     createdAt: workspace.createdAt,
     updatedAt: workspace.updatedAt,
   }
@@ -40,6 +41,7 @@ function changedWorkspaceView(workspaceId: string, value: unknown): WorkspaceVie
     title: record.title,
     sessionIds: [...record.sessionIds],
     assignedSessionIds: [...record.assignedSessionIds],
+    ...record.appearance === undefined ? {} : { appearance: record.appearance },
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   }

@@ -1,7 +1,7 @@
 /** Test-owned workspaces face: the renderer standard-kit observable plus recorded actions. */
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type {
-  IWorkspaces, WorkspaceId, WorkspaceMoveSessionValue, WorkspaceSnapshot, WorkspaceView,
+  IWorkspaces, WorkspaceAppearance, WorkspaceId, WorkspaceMoveSessionValue, WorkspaceSnapshot, WorkspaceView,
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -102,6 +102,34 @@ export class TestWorkspaces implements IWorkspaces {
     const stub = this.stubs.get('rename')
     if (stub !== undefined) return await (stub(workspaceId, title) as Promise<WorkspaceView>)
     return { workspaceId, title, path: `/${title}`, sessionIds: [] } as unknown as WorkspaceView
+  }
+
+  /**
+   * Replace a Workspace's appearance (recorded). The default mirrors the
+   * production face's observable effect on the list state: the matching row
+   * carries the new appearance, and an empty object removes the field.
+   * @param workspaceId - target workspace.
+   * @param appearance - complete appearance to store.
+   * @returns the updated row, or a minimal view when the list holds no such row.
+   */
+  async setAppearance(workspaceId: WorkspaceId, appearance: WorkspaceAppearance): Promise<WorkspaceView> {
+    this.calls.push({ method: 'setAppearance', args: [workspaceId, appearance] })
+    const stub = this.stubs.get('setAppearance')
+    if (stub !== undefined) return await (stub(workspaceId, appearance) as Promise<WorkspaceView>)
+    const reset = appearance.color === undefined && appearance.icon === undefined
+    await this.update((draft) => {
+      draft.items = draft.items.map((item) => {
+        if (item.workspaceId !== workspaceId) return item
+        const { appearance: _previous, ...rest } = item
+        return reset ? rest : { ...rest, appearance }
+      })
+    })
+    const workspace = this.list.getSnapshot().items.find(item => item.workspaceId === workspaceId)
+    if (workspace !== undefined) return workspace
+    return {
+      workspaceId, title: '', path: '', sessionIds: [], assignedSessionIds: [], ...reset ? {} : { appearance },
+      createdAt: '', updatedAt: '',
+    }
   }
 
   /**

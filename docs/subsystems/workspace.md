@@ -69,12 +69,25 @@ interface Workspace {
    */
   readonly assignedSessionIds: readonly SessionId[]
 
+  /** User-chosen accent color and icon; `undefined` when both are the default. */
+  readonly appearance: WorkspaceAppearance | undefined
+
   /**
    * Replace the display title durably.
    * @param title - New title; any string, duplicates across workspaces allowed.
    * @returns resolution after durability.
    */
   setTitle(title: string): Promise<void>
+
+  /**
+   * Replace the accent color and icon durably. An empty object clears both;
+   * a value equal to the current one resolves without writing, aside from the
+   * durable filtered-candidate prune every accepted mutation performs. The
+   * caller validates the fields; this method trusts them.
+   * @param appearance - Color and icon to store; omitted fields are cleared.
+   * @returns resolution after durability.
+   */
+  setAppearance(appearance: WorkspaceAppearance): Promise<void>
 
   /**
    * Prepend a session to this workspace's candidate account. Without
@@ -181,6 +194,8 @@ interface SessionActivity {
 A whole Workspace archives the same way through a second registry-global durable set, `archivedWorkspaceIds`. `archiveWorkspace(workspaceId)` asks the waterfall once per accounted Session that is not already in `archivedSessionIds` and rejects any reported activity with `WorkspaceActiveError` (`workspaceId`, `sessions`: each active Session with its `activity`) without writing; the controller maps it to `workspace/workspace-active` with the same details, and an unknown id maps to `workspace/not-found`. With `stopActivity: true` (`ArchiveWorkspaceOptions`, exposed by `WorkspaceArchiveWorkspaceRequest`) the set is written first and `workspace/session-stop` is dispatched for every Session that reported activity. Nothing else is written: the record, its order slot, its Session account, and each Session's own pin and archive flags stay as they are, so `unarchiveWorkspace(workspaceId)` restores the group in place and a Session archived on its own before stays archived. While the Workspace is archived, `isSessionEffectivelyArchived(sessionId)` reports its accounted Sessions as archived; the Session Controller's `agent/pre-step` gate reads that derived answer, and `session.create` with that `workspaceId` or `session.fork` of one of its Sessions is refused as `workspace/archived`. The follow stream carries the set in its baseline and as the `archivedWorkspaces` increment; both verbs return `WorkspaceArchivedWorkspacesValue`, the complete set.
 
 Membership can also be decided by the user. A record's `assignedSessionIds` names the accounted Sessions moved in explicitly; an assigned id is a member regardless of its header cwd, while every other member still needs the canonical-cwd match, and the set is always a subset of `sessionIds` (startup validation rejects a stray or repeated assignment). `moveSession(sessionId, workspaceId?)` runs on the registry's serialized chain: an unknown destination (`WorkspaceUnknownWorkspaceError`), an archived destination (`WorkspaceArchivedError`), and an unknown Session (`WorkspaceUnknownSessionError`) are refused before any write; the current holder is found through the record-level account so a cwd-filtered candidate is released too; the detach is written first, then `attachSession(sessionId, { assigned: true })` on the destination, so an interrupted move leaves the Session Ungrouped and never double-owned. The result is `{ previousWorkspaceId }`. The controller's `workspace.moveSession` maps the three refusals to `workspace/not-found`, `workspace/archived`, and `session/not-found`, returns `WorkspaceMoveSessionValue` (the destination row when there is one, plus `previousWorkspaceId`), and relies on the `upsert` increment for the previous holder's row; `WorkspaceView.assignedSessionIds` projects the assigned set. A fork of an assigned member attaches to the same Workspace as assigned. The decision record is the [assigned-membership Agent Note](../../.agents/notes/implemented/feature/2026-09-30-assigned-session-membership-overrides-cwd.md).
+
+A record may also carry an `appearance`: a user-chosen accent `color` from the closed palette `blue`, `green`, `amber`, `red`, `neutral`, and an `icon` reference that is either `icon:<id>` for one of the curated glyph ids in `WORKSPACE_ICON_IDS` (`folder`, `code`, `globe`, `database`, `data`, `goal`, `sparkle`, `plan`, `skill`, `users`, `shield`, `api`, `checklist`, `gauge`, `light`, `agent-preset`, `browse`, `link`, `alarm-clock`) or `emoji:<cluster>` where the payload is exactly one extended grapheme cluster as segmented by `Intl.Segmenter('und', { granularity: 'grapheme' })`, at most 16 UTF-16 code units long, with no control character; `isWorkspaceIconRef` is the single check, exported from the domain and restated for the browser in the controller's Client face. Both fields are optional, the field is absent when neither is set, and records written before the field existed parse unchanged. `Workspace.setAppearance(appearance)` writes through the entity's single mutation path, so `updatedAt` advances; an empty object clears both fields by deleting the stored key, and a value equal to the current one resolves without writing. The `workspaceAppearance` zod schema (`.strict()`, each field `exactOptional`) rejects a stored record outside this grammar at the durable boundary, and the controller's `workspace.setAppearance({ workspaceId, appearance })` runs the same schema over the wire payload: a failure is `gateway/bad-request`, an unknown Workspace is `workspace/not-found`, and the reply is the complete row; `WorkspaceView.appearance` is projected by both the baseline and the `upsert` increment, and the key is omitted when the Workspace has none. The emoji variant is typed as a branded string (`WorkspaceEmojiRef`) rather than a template literal because the Remote codec projects brands but not open template literals; glyph references keep their literal type `icon:<id>`.
 
 ## Consumers
 
@@ -374,6 +389,15 @@ Host service backing the generated `ctx.remote.workspace` namespace.
  * @returns the updated Workspace projection.
  */
 @Remote('rename') rename(request: WorkspaceRenameRequest): Promise<WorkspaceValue>
+
+/**
+ * Replace one Workspace's accent color and icon; an empty `appearance`
+ * resets both. A payload outside the palette or icon grammar fails as
+ * `gateway/bad-request`, an unknown Workspace as `workspace/not-found`.
+ * @param request - Workspace identity and the complete appearance to store.
+ * @returns the updated complete Workspace row.
+ */
+@Remote('setAppearance') setAppearance(request: WorkspaceSetAppearanceRequest): Promise<WorkspaceValue>
 
 /**
  * Remove one Workspace registration while retaining files and Sessions.
