@@ -7,6 +7,11 @@
   - text: Order by
   - menuitem "Manual"
   - menuitem "Last updated"
+  - menuitem "Name"
+  - separator
+  - text: Direction
+  - menuitem "Ascending"
+  - menuitem "Descending"
   - separator
   - text: Filter sessions
   - menuitem "Hide archived"

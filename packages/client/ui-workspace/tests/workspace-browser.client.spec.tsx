@@ -2836,29 +2836,31 @@ describe('WorkspaceBrowser computed ordering', () => {
     expect(b.store.getSnapshot()).toMatchObject({ orderBy: 'name', orderDirection: { name: 'desc' } })
   })
 
-  it('makes Workspace rows inert to drag under a computed mode while a Session drag still selects Manual', () => {
+  it('keeps Workspace rows draggable under a computed mode; a drop selects Manual and writes the displayed anchor', () => {
     const b = mount({
       useSessions: hook(sessionState([titled('one', 'one', 3), titled('two', 'two', 2)])),
-      useWorkspaces: hook(workspaceState([workspace('alpha', ['one', 'two']), workspace('beta', [])])),
+      useWorkspaces: hook(workspaceState([workspace('beta', []), workspace('alpha', ['one', 'two']), workspace('gamma', [])])),
     })
     fireEvent.click(screen.getByText('alpha'))
-    const alphaRow = (): HTMLElement => screen.getByText('alpha').closest('[role="treeitem"]') as HTMLElement
-    expect(alphaRow().draggable).toBe(true)
+    const row = (title: string): HTMLElement => screen.getByText(title).closest('[role="treeitem"]') as HTMLElement
+
+    // Name order displays alpha, beta, gamma while the Host order is beta, alpha, gamma.
+    pickView('按名称')
+    expect(rowKeys().filter(key => key.startsWith('workspace:'))).toEqual(['workspace:alpha', 'workspace:beta', 'workspace:gamma'])
+    expect(row('alpha').draggable).toBe(true)
+    expect(row('gamma').draggable).toBe(true)
+
+    // Dropping gamma onto the lower half of alpha lands before the next DISPLAYED sibling, beta.
+    fireEvent.dragStart(row('gamma'), { dataTransfer: dragData() })
+    fireDrag(row('alpha').parentElement as HTMLElement, 'drop', 100)
+    fireEvent.dragEnd(row('gamma'))
+    expect(b.props.insertWorkspaceBefore).toHaveBeenCalledWith(wid('gamma'), wid('beta'))
+    // The drop is a manual order edit, so the view follows it into Manual.
+    expect(b.store.getSnapshot()).toMatchObject({ orderBy: 'manual' })
 
     pickView('按名称')
-    expect(alphaRow().draggable).toBe(false)
-    expect(screen.getByText('beta').closest('[role="treeitem"]')?.getAttribute('draggable')).toBe('false')
-    // No drag state starts, so hovering another section never draws a marker or reorders.
-    fireEvent.dragStart(alphaRow(), { dataTransfer: dragData() })
-    const betaSection = screen.getByText('beta').closest('[role="treeitem"]')?.parentElement as HTMLElement
-    fireDrag(betaSection, 'dragOver', 100)
-    expect(betaSection.className).not.toContain('workspaceDrop')
-    fireDrag(betaSection, 'drop', 100)
-    fireEvent.dragEnd(alphaRow())
-    expect(b.props.insertWorkspaceBefore).not.toHaveBeenCalled()
-
     const [one, two] = screen.getAllByRole('treeitem')
-      .filter(row => row.getAttribute('data-row-key')?.startsWith('session:')) as [HTMLElement, HTMLElement]
+      .filter(entry => entry.getAttribute('data-row-key')?.startsWith('session:')) as [HTMLElement, HTMLElement]
     expect(one.getAttribute('data-row-key')).toBe('session:one')
     expect(one.draggable).toBe(true)
     two.getBoundingClientRect = () => ({
@@ -2867,7 +2869,6 @@ describe('WorkspaceBrowser computed ordering', () => {
     fireEvent.dragStart(one, { dataTransfer: dragData() })
     fireDrag(two, 'drop', 180)
     expect(b.store.getSnapshot()).toMatchObject({ orderBy: 'manual', sessionOrderByAccount: { alpha: ['two', 'one'] } })
-    expect(alphaRow().draggable).toBe(true)
   })
 
   it('sorts sibling Workspaces under each parent in Workspace Tree mode', () => {

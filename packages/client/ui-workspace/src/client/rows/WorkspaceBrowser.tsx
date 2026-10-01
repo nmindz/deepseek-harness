@@ -302,8 +302,6 @@ type SessionTreeProps = Pick<
   animationResetKey: string
   /** Nest Workspaces under their nearest registered ancestors. */
   nestWorkspaces: boolean
-  /** Workspace rows accept drag only while the Host order is what the list shows (Manual). */
-  workspaceDragEnabled: boolean
   /** Explicit persisted group expansion, including descendants in tree mode. */
   groupExpansion: Readonly<Record<string, boolean>>
   /** Persist one Workspace group's expansion. */
@@ -350,7 +348,7 @@ function SessionTree({
   onRenameRequest, onDeleteRequest, onSessionRenameRequest,
   renderSlot,
   insertWorkspaceBefore, archiveWorkspace, unarchiveWorkspace,
-  nestWorkspaces, workspaceDragEnabled, groupExpansion, setGroupExpanded,
+  nestWorkspaces, groupExpansion, setGroupExpanded,
   setSessionOrder, home, t,
   revealSessionId, onSessionRevealed, shortcuts,
 }: SessionTreeProps) {
@@ -492,7 +490,7 @@ function SessionTree({
     const workspaceMarker = workspaceId !== undefined && workspaceDrag?.over?.id === workspaceId
       ? workspaceDrag.over.half
       : null
-    const workspaceDragProps = workspaceId === undefined || !workspaceDragEnabled ? undefined : {
+    const workspaceDragProps = workspaceId === undefined ? undefined : {
       start: () => {
         workspaceDropCommitted.current = false
         setWorkspaceDrag({ workspaceId, over: null })
@@ -1080,6 +1078,12 @@ export function WorkspaceBrowser({
   const saveSessionOrder = (accountKey: string, order: readonly string[]): void => {
     actions.setSessionOrder(accountKey, order, activeSessionOrders)
   }
+  // A Workspace drop is a manual order edit like a Session drop: it selects
+  // Manual so the Host order it writes is the order the list shows.
+  const reorderWorkspace: WorkspaceBrowserProps['insertWorkspaceBefore'] = (workspaceId, beforeWorkspaceId) => {
+    actions.setOrderBy('manual', activeSessionOrders)
+    return insertWorkspaceBefore(workspaceId, beforeWorkspaceId)
+  }
   // A mode, direction, or filter change replaces the list without row motion.
   const animationResetKey = `${groupBy}/${orderBy}/${orderDirection}/${archivedFilter}`
   // The query outlives the tree and the input (both wide-only) so collapsing
@@ -1465,7 +1469,6 @@ export function WorkspaceBrowser({
                 ungroupedSessionIds={orderedUngroupedSessionIds}
                 workspaceReady={workspaceReady}
                 nestWorkspaces={groupBy === 'workspace-tree'}
-                workspaceDragEnabled={orderBy === 'manual'}
                 animationResetKey={animationResetKey}
                 groupExpansion={groupExpansion}
                 setGroupExpanded={actions.setGroupExpanded}
@@ -1474,7 +1477,7 @@ export function WorkspaceBrowser({
                 onLeaveArchivedOnly={leaveArchivedOnly}
                 startSession={startSession}
                 open={guardedOpen}
-                insertWorkspaceBefore={insertWorkspaceBefore}
+                insertWorkspaceBefore={reorderWorkspace}
                 archiveWorkspace={archiveWorkspace}
                 unarchiveWorkspace={unarchiveWorkspace}
                 revealSessionId={revealSessionId}
