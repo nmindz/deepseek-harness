@@ -7,6 +7,7 @@
  * draft kept.
  */
 import { type CSSProperties, type KeyboardEvent, useEffect, useState } from 'react'
+import clsx from 'clsx'
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import { isWorkspaceIconRef, WORKSPACE_COLORS, WORKSPACE_ICON_IDS } from '@deepseek-ai/dsh-api-workspace-controller/appearance'
 import type {
@@ -15,6 +16,7 @@ import type {
 import type { WorkspaceBrowserProps } from '../contract/slots.ts'
 import { WorkspaceIcon } from './WorkspaceIcon.tsx'
 import css from './WorkspaceBrowser.module.css'
+import rowsCss from './Rows.module.css'
 
 const ICON_PREFIX = 'icon:'
 const EMOJI_PREFIX = 'emoji:'
@@ -208,11 +210,10 @@ export function WorkspaceAppearancePicker({ open, title, appearance, defaultIcon
                 className={css.appearanceChip}
                 onClick={() => { pickColor(color) }}
               >
-                <WorkspaceIcon
-                  appearance={appearanceOf({ color, icon: draft.icon })}
-                  defaultIcon={defaultIcon}
-                  expanded={false}
-                  emojiLabel={emojiLabel}
+                <span
+                  aria-hidden="true"
+                  className={clsx(rowsCss.workspaceIcon, css.appearanceSwatch, color === undefined && css.appearanceSwatchDefault)}
+                  data-accent={color}
                 />
               </button>
             )
