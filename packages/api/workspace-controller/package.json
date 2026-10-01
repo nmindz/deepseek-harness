@@ -30,6 +30,10 @@
       "types": "./lib/types/default-workspace.d.ts",
       "default": "./lib/types/default-workspace.js"
     },
+    "./appearance": {
+      "types": "./lib/types/appearance-vocabulary.d.ts",
+      "default": "./lib/types/appearance-vocabulary.js"
+    },
     "./typert": {
       "types": "./lib/typert.host.d.ts",
       "default": "./lib/typert.host.js"

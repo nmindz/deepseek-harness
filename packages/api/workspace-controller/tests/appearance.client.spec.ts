@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { WORKSPACE_COLORS, WORKSPACE_ICON_IDS, isWorkspaceIconRef, workspaceIconRef } from '../src/client/appearance.ts'
+import { WORKSPACE_COLORS, WORKSPACE_ICON_IDS, isWorkspaceIconRef, workspaceIconRef } from '../src/appearance-vocabulary.ts'
 
 /** Accepted spellings, mirrored from the domain suite. */
 const ACCEPTED: readonly string[] = [
