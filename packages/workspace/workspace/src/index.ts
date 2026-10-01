@@ -1,7 +1,7 @@
 /**
  * Workspace entity registry (`ctx.workspaceRegistry`): durable workspace records,
- * stable registry order, and header-validated session membership over the
- * domain data form.
+ * stable registry order, and session membership — header-validated or
+ * explicitly assigned — over the domain data form.
  * @module @deepseek-ai/dsh-workspace
  */
 
@@ -21,7 +21,7 @@ import type { WorkspaceDomainState, WorkspaceRecord } from './spec.ts'
 import type { SessionActivity, Workspace, WorkspaceId as WorkspaceIdBrand } from './types.ts'
 
 export type {
-  SessionActivity, SessionActivityItem, SessionActivityKind, SessionActivityKindMap, Workspace,
+  AttachSessionOptions, SessionActivity, SessionActivityItem, SessionActivityKind, SessionActivityKindMap, Workspace,
 } from './types.ts'
 export { workspaceDomainState, workspaceRecord, workspaceDomainSpec } from './spec.ts'
 export type { WorkspaceDomainState, WorkspaceRecord } from './spec.ts'
@@ -40,16 +40,16 @@ export function WorkspaceId(id: string): WorkspaceId {
 }
 
 /**
- * An archiveSession or pinSession request named a session neither live nor in
- * session persistence — a definite miss only; storage faults propagate as
- * themselves.
+ * An archiveSession, pinSession, or moveSession request named a session
+ * neither live nor in session persistence — a definite miss only; storage
+ * faults propagate as themselves.
  */
 export class WorkspaceUnknownSessionError extends Error {
   /**
    * @param sessionId - The unknown session id.
    * @param verb - The registry operation that named the session.
    */
-  constructor(readonly sessionId: SessionId, verb: 'archive' | 'pin') {
+  constructor(readonly sessionId: SessionId, verb: 'archive' | 'move' | 'pin') {
     super(`cannot ${verb} session '${sessionId}': live sessions and session persistence hold no such session`)
     this.name = 'WorkspaceUnknownSessionError'
   }
@@ -93,16 +93,34 @@ export class WorkspaceOrderInvalidError extends Error {
   }
 }
 
-/** An archiveWorkspace request named a workspace absent from the durable registry order. */
+/** An archiveWorkspace or moveSession request named a workspace absent from the durable registry order. */
 export class WorkspaceUnknownWorkspaceError extends Error {
   /**
    * @param workspaceId - The unknown workspace id.
    * @param verb - The registry operation that named the workspace.
    */
-  constructor(readonly workspaceId: WorkspaceId, verb: 'archive') {
+  constructor(readonly workspaceId: WorkspaceId, verb: 'archive' | 'move') {
     super(`cannot ${verb} workspace '${workspaceId}': the registry holds no such workspace`)
     this.name = 'WorkspaceUnknownWorkspaceError'
   }
+}
+
+/** A moveSession request named a target workspace in the archived Workspace set; nothing was written. */
+export class WorkspaceArchivedError extends Error {
+  /**
+   * @param workspaceId - The archived workspace id.
+   * @param verb - The registry operation that named the workspace.
+   */
+  constructor(readonly workspaceId: WorkspaceId, verb: 'move') {
+    super(`cannot ${verb} session into workspace '${workspaceId}': the workspace is archived`)
+    this.name = 'WorkspaceArchivedError'
+  }
+}
+
+/** The outcome of {@link WorkspaceRegistry.moveSession}. */
+export interface MoveSessionResult {
+  /** The workspace that accounted the session before the move, or `undefined` when it was Ungrouped. */
+  readonly previousWorkspaceId: WorkspaceId | undefined
 }
 
 /** One accounted session's reported activity, as collected by {@link WorkspaceRegistry.archiveWorkspace}. */
@@ -339,13 +357,7 @@ export class WorkspaceRegistry extends Service {
    * @returns a fresh ordered array of workspace entities.
    */
   list(): Workspace[] {
-    return this.requireState().workspaceIds.map((id) => {
-      const entity = this.entities.get(id)
-      if (entity === undefined) {
-        throw new Error(`workspace registry order references missing workspace '${id}'`)
-      }
-      return entity
-    })
+    return this.orderedEntities()
   }
 
   /**
@@ -381,6 +393,48 @@ export class WorkspaceRegistry extends Service {
       if (sameIds(workspaceIds, state.workspaceIds)) return state.workspaceIds
       await this.setState({ ...state, workspaceIds })
       return workspaceIds
+    })
+  }
+
+  /**
+   * Move one session between workspaces, or out of every workspace. The
+   * target must be in the durable registry order — an unknown id rejects
+   * with {@link WorkspaceUnknownWorkspaceError} — and must not be archived
+   * ({@link WorkspaceArchivedError}); the session must exist, live or in
+   * session persistence ({@link WorkspaceUnknownSessionError}). Every check
+   * runs before anything is written. The current owner is the workspace
+   * whose durable account names the session, found in registry order
+   * before the membership filter, so a cwd-filtered candidate is still
+   * detached. A session already held by the target, or Ungrouped when the
+   * target is omitted, resolves without writing. Otherwise the owner's
+   * detach is written first and the target's assigned attach second, both
+   * serialized on the registry operation chain: an interruption between the
+   * two leaves the session Ungrouped, never accounted twice. The target
+   * records the session in its `assignedSessionIds`, so its membership no
+   * longer depends on its cwd and survives until the next move or detach.
+   * The registry-global pin and archive sets are not touched.
+   * @param sessionId - The session to move.
+   * @param workspaceId - The destination workspace; omitted leaves the session Ungrouped.
+   * @returns the previous owner after both writes are durable.
+   */
+  moveSession(sessionId: SessionId, workspaceId?: WorkspaceId): Promise<MoveSessionResult> {
+    return this.enqueueOperation(async () => {
+      const target = workspaceId === undefined ? undefined : this.entities.get(workspaceId)
+      if (workspaceId !== undefined && target === undefined) {
+        throw new WorkspaceUnknownWorkspaceError(workspaceId, 'move')
+      }
+      if (target !== undefined && this.requireState().archivedWorkspaceIds.includes(target.id)) {
+        throw new WorkspaceArchivedError(target.id, 'move')
+      }
+      if (!(await this.sessionKnown(sessionId))) {
+        throw new WorkspaceUnknownSessionError(sessionId, 'move')
+      }
+      const owner = this.orderedEntities().find(entity => entity.accounts(sessionId))
+      const previousWorkspaceId = owner?.id
+      if (owner === target) return { previousWorkspaceId }
+      if (owner !== undefined) await owner.detachSession(sessionId)
+      if (target !== undefined) await target.attachSession(sessionId, { assigned: true })
+      return { previousWorkspaceId }
     })
   }
 
@@ -474,7 +528,7 @@ export class WorkspaceRegistry extends Service {
    * Archive one workspace durably. The workspace must be in the durable
    * registry order; an unknown id rejects with
    * {@link WorkspaceUnknownWorkspaceError}. Every accounted session (the
-   * entity's header-validated `sessionIds`) not already in
+   * entity's member `sessionIds`) not already in
    * `archivedSessionIds` is asked through the `workspace/session-activity`
    * waterfall, in account order. Without `stopActivity` any reported
    * activity rejects with {@link WorkspaceActiveError} listing every active
@@ -540,7 +594,7 @@ export class WorkspaceRegistry extends Service {
   }
 
   /**
-   * The workspace whose header-validated `sessionIds` include a session.
+   * The workspace whose member `sessionIds` include a session.
    * Session accounting is one-owner, so at most one entity qualifies; the
    * scan runs in registry order over the synchronous projection and performs
    * no persistence reads.
@@ -686,6 +740,7 @@ export class WorkspaceRegistry extends Service {
       path: canonical,
       title: workspaceName,
       sessionIds: [],
+      assignedSessionIds: [],
       createdAt: now,
       updatedAt: now,
     }
@@ -851,6 +906,7 @@ export class WorkspaceRegistry extends Service {
           path: group.path,
           title: defaultWorkspaceTitle(group.path),
           sessionIds,
+          assignedSessionIds: [],
           createdAt,
           updatedAt: createdAt,
         }
@@ -961,6 +1017,20 @@ export class WorkspaceRegistry extends Service {
         }
         accounted.set(sessionId, id)
       }
+      const assigned = new Set<SessionId>()
+      for (const sessionId of record.assignedSessionIds) {
+        if (assigned.has(sessionId)) {
+          throw new Error(
+            `workspace domain is inconsistent: workspace '${id}' assigns session '${sessionId}' twice`,
+          )
+        }
+        if (accounted.get(sessionId) !== id) {
+          throw new Error(
+            `workspace domain is inconsistent: workspace '${id}' assigns session '${sessionId}' it does not account`,
+          )
+        }
+        assigned.add(sessionId)
+      }
     }
   }
 
@@ -970,6 +1040,17 @@ export class WorkspaceRegistry extends Service {
       const record = this.requireTable().get(id) as WorkspaceRecord
       this.entities.set(id, new WorkspaceEntity(this.host, id, record))
     }
+  }
+
+  /** Entities in durable registry order; an order slot without a cached entity is corruption and fails loud. */
+  private orderedEntities(): WorkspaceEntity[] {
+    return this.requireState().workspaceIds.map((id) => {
+      const entity = this.entities.get(id)
+      if (entity === undefined) {
+        throw new Error(`workspace registry order references missing workspace '${id}'`)
+      }
+      return entity
+    })
   }
 
   private async replaceHeaderIndex(headers: readonly SessionHeader[]): Promise<void> {
@@ -1019,6 +1100,7 @@ export class WorkspaceRegistry extends Service {
     for (const entity of this.entities.values()) {
       const record = this.requireTable().get(entity.id) as WorkspaceRecord
       for (const sessionId of record.sessionIds) {
+        if (record.assignedSessionIds.includes(sessionId)) continue
         const path = this.sessionPaths.get(sessionId)
         if (path === record.path) continue
         const reason = this.invalidSessionPaths.get(sessionId)

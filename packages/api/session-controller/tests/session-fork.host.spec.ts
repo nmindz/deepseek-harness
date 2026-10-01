@@ -15,7 +15,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import type { Workspace } from '@deepseek-ai/dsh-workspace'
 import {
-  createSessionTestRemote, installSessionReadTestServices, testSessionPersistence,
+  createSessionTestRemote, installSessionReadTestServices, testSessionPersistence, testWorkspace,
 } from './test-remote.ts'
 
 const sid = (id: string): SessionId => id as SessionId
@@ -195,17 +195,16 @@ describe('sessions.fork', () => {
     await ctx.fiber.dispose()
   })
 
-  it('attaches a subagent fork to its nearest workspace-owning ancestor', async () => {
+  /** Fork a subagent grandchild whose owner ancestor is accounted, assigned or not, and return the attach spy. */
+  async function forkSubagentLineage(assignedOwner: boolean) {
     const accounted: SessionId[] = []
-    const attachSession = vi.fn<(sessionId: SessionId) => Promise<void>>()
-      .mockResolvedValue(undefined)
-    const workspace = {
-      sessionIds: accounted,
-      attachSession,
-    } as unknown as Workspace
+    const assigned: SessionId[] = []
+    const attachSession = vi.fn<Workspace['attachSession']>().mockResolvedValue(undefined)
+    const workspace = testWorkspace({ sessionIds: accounted, assignedSessionIds: assigned, attachSession })
     const ctx = await composed([workspace])
     const owner = await liveAgent(ctx, 'session-owner', 1)
     accounted.push(owner.id)
+    if (assignedOwner) assigned.push(owner.id)
     const child = await liveAgent(ctx, 'session-child', 1, 'none', {
       parentSession: owner.id,
       origin: 'subagent',
@@ -226,15 +225,28 @@ describe('sessions.fork', () => {
     })
 
     const response = await remote(ctx).fork(request({ sessionId: grandchild.id }))
-
     expect(response.ok ? undefined : response.error).toBeUndefined()
-    if (!response.ok) return
-    expect(attachSession).toHaveBeenCalledWith(response.value.sessionId)
-    expect(ctx.sessions.get(response.value.sessionId)?.header).toMatchObject({
+    if (!response.ok) throw new Error('fork was refused')
+    return { ctx, grandchild, attachSession, childId: response.value.sessionId }
+  }
+
+  it('attaches a subagent fork to its nearest workspace-owning ancestor', async () => {
+    const { ctx, grandchild, attachSession, childId } = await forkSubagentLineage(false)
+
+    expect(attachSession).toHaveBeenCalledWith(childId)
+    expect(ctx.sessions.get(childId)?.header).toMatchObject({
       parentSession: grandchild.id,
       cwd: '/proj',
     })
-    expect(ctx.sessions.get(response.value.sessionId)?.header.origin).toBeUndefined()
+    expect(ctx.sessions.get(childId)?.header.origin).toBeUndefined()
+    await ctx.fiber.dispose()
+  })
+
+  it('assigns a subagent fork when the workspace-owning ancestor is itself assigned', async () => {
+    const { ctx, attachSession, childId } = await forkSubagentLineage(true)
+
+    // The ancestor's membership rests on the user's assignment, so the child follows it regardless of cwd.
+    expect(attachSession).toHaveBeenCalledWith(childId, { assigned: true })
     await ctx.fiber.dispose()
   })
 

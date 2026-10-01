@@ -17,14 +17,19 @@ const workspaceId = z.string().transform(value => value as WorkspaceId)
 const sessionId = z.string().transform(value => brandString<SessionId>(value))
 
 /**
- * Durable shape of one workspace record. `path` is the `fs.realpath` canon
+ * Durable fields of one workspace record. `path` is the `fs.realpath` canon
  * stamped at create; `sessionIds` is the ordered ownership account (array
- * order is display order); timestamps are ISO-8601 strings.
+ * order is display order); `assignedSessionIds` marks the accounted sessions
+ * a user moved in explicitly, and is always a subset of `sessionIds`;
+ * timestamps are ISO-8601 strings. The assigned set is defaulted so records
+ * written before the field existed parse unchanged.
  */
 export const workspaceRecord = z.object({
   path: z.string(),
   title: z.string(),
   sessionIds: z.array(sessionId),
+  /** Accounted sessions exempt from the canonical-cwd membership filter; each id is also in `sessionIds`. */
+  assignedSessionIds: z.array(sessionId).default([]),
   createdAt: z.string(),
   updatedAt: z.string(),
 })

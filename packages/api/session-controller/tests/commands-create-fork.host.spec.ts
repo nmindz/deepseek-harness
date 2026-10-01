@@ -5,14 +5,15 @@ import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
-import type { Workspace, WorkspaceId } from '@deepseek-ai/dsh-workspace'
+import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
+import type { Workspace } from '@deepseek-ai/dsh-workspace'
 import { describe, expect, it, vi } from 'vitest'
 import {
   ApiSessionAgentController,
   ApiSessionCwdConflict,
 } from '../src/agent.ts'
 import { SessionCommandController } from '../src/commands.ts'
-import { installSessionReadTestServices, testSessionPersistence } from './test-remote.ts'
+import { installSessionReadTestServices, testSessionPersistence, testWorkspace } from './test-remote.ts'
 
 async function expectFailure(operation: Promise<unknown>, code: string): Promise<void> {
   await expect(operation).rejects.toMatchObject({ code })
@@ -105,12 +106,12 @@ describe('Session creation failures', () => {
 
   it('refuses to create a Session in an archived Workspace before allocating it', async () => {
     const ctx = await baseContext()
-    const attachSession = vi.fn()
-    const workspace = {
-      id: 'workspace-archived' as WorkspaceId,
+    const attachSession = vi.fn<Workspace['attachSession']>()
+    const workspace = testWorkspace({
+      id: WorkspaceId('workspace-archived'),
       path: '/workspace',
       attachSession,
-    } as unknown as Workspace
+    })
     ctx.provide('workspaceRegistry', {
       get: () => workspace,
       list: () => [workspace],
@@ -317,15 +318,40 @@ describe('Session fork failures', () => {
     await ctx.fiber.dispose()
   })
 
+  it.each([
+    { source: 'assigned', assigned: true, expected: [{ assigned: true }] },
+    { source: 'cwd-matched', assigned: false, expected: [] },
+  ])('attaches the fork of an $source source the way its source is held', async ({ assigned, expected }) => {
+    const ctx = await baseContext()
+    const source = completedSession(ctx, `${assigned ? 'assigned' : 'plain'}-source`, '/workspace')
+    const attachSession = vi.fn<Workspace['attachSession']>().mockResolvedValue(undefined)
+    const workspace = testWorkspace({
+      sessionIds: [source.id],
+      assignedSessionIds: assigned ? [source.id] : [],
+      attachSession,
+    })
+    ctx.provide('workspaceRegistry', { list: () => [workspace], archivedWorkspaceIds: [] } as never)
+    vi.spyOn(ctx.agents, 'create').mockImplementation(
+      (options: CreateAgentOptions) => Promise.resolve(resolvedHandle(ctx, options.sessionId)),
+    )
+    const controller = new SessionCommandController(ctx, controllerAgents(), '/default')
+
+    const forked = await controller.fork({ sessionId: source.id })
+    // An assigned source hands its assignment down; a cwd-held source keeps the plain attach.
+    expect(attachSession).toHaveBeenCalledWith(forked.sessionId, ...expected)
+    expect(attachSession.mock.calls[0]).toHaveLength(1 + expected.length)
+    await ctx.fiber.dispose()
+  })
+
   it('refuses to fork a Session whose owning Workspace is archived before creating the child', async () => {
     const ctx = await baseContext()
     const source = completedSession(ctx, 'archived-owner-source', '/workspace')
-    const attachSession = vi.fn()
-    const workspace = {
-      id: 'workspace-archived' as WorkspaceId,
+    const attachSession = vi.fn<Workspace['attachSession']>()
+    const workspace = testWorkspace({
+      id: WorkspaceId('workspace-archived'),
       sessionIds: [source.id],
       attachSession,
-    } as unknown as Workspace
+    })
     ctx.provide('workspaceRegistry', {
       list: () => [workspace],
       archivedWorkspaceIds: [workspace.id],

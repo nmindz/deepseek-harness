@@ -3753,6 +3753,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the complete committed workspace order.',
       },
       {
+        signature: 'moveSession(sessionId: SessionId, workspaceId?: WorkspaceId): Promise<MoveSessionResult>',
+        description: 'Move one session between workspaces, or out of every workspace. The target must be in the durable registry order — an unknown id rejects with WorkspaceUnknownWorkspaceError — and must not be archived (WorkspaceArchivedError); the session must exist, live or in session persistence (WorkspaceUnknownSessionError). Every check runs before anything is written. The current owner is the workspace whose durable account names the session, found in registry order before the membership filter, so a cwd-filtered candidate is still detached. A session already held by the target, or Ungrouped when the target is omitted, resolves without writing. Otherwise the owner\'s detach is written first and the target\'s assigned attach second, both serialized on the registry operation chain: an interruption between the two leaves the session Ungrouped, never accounted twice. The target records the session in its `assignedSessionIds`, so its membership no longer depends on its cwd and survives until the next move or detach. The registry-global pin and archive sets are not touched.',
+        parameters: [{ name: 'sessionId', description: 'The session to move.' }, { name: 'workspaceId', description: 'The destination workspace; omitted leaves the session Ungrouped.' }],
+        returns: 'the previous owner after both writes are durable.',
+      },
+      {
         signature: 'archiveSession(sessionId: SessionId, options: ArchiveSessionOptions = {}): Promise<void>',
         description: 'Archive one session durably. The session must exist (live or in session persistence); its workspace accounting — or lack of one — is irrelevant. Without `stopActivity` the session must also be inactive: the `workspace/session-activity` waterfall is asked once, and any reported activity rejects with WorkspaceActiveSessionError before anything is written. With `stopActivity` the archive is written without an activity check, and the `workspace/session-stop` providers are then asked to stop the session\'s work: the durable archive set is what a provider\'s `agent/pre-step` gate reads, so every wake the stops induce is already blocked. Archiving drops the session\'s pin in the same durable write (pinning and archival are mutually exclusive). An already archived id resolves without writing, asking, or stopping.',
         parameters: [{ name: 'sessionId', description: 'The session to archive.' }, { name: 'options', description: 'Whether running work is stopped instead of refusing.' }],
@@ -3766,7 +3772,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'archiveWorkspace(id: WorkspaceId, options: ArchiveWorkspaceOptions = {}): Promise<void>',
-        description: 'Archive one workspace durably. The workspace must be in the durable registry order; an unknown id rejects with WorkspaceUnknownWorkspaceError. Every accounted session (the entity\'s header-validated `sessionIds`) not already in `archivedSessionIds` is asked through the `workspace/session-activity` waterfall, in account order. Without `stopActivity` any reported activity rejects with WorkspaceActiveError listing every active session before anything is written. With `stopActivity` the archive is written first, and the `workspace/session-stop` providers are then asked to stop each session that reported activity: the durable archived set is what a provider\'s `agent/pre-step` gate reads through isSessionEffectivelyArchived, so every wake the stops induce is already blocked. The sessions\' own archive and pin flags are never written; their archive is derived while the workspace stays archived. An already archived id resolves without writing, asking, or stopping.',
+        description: 'Archive one workspace durably. The workspace must be in the durable registry order; an unknown id rejects with WorkspaceUnknownWorkspaceError. Every accounted session (the entity\'s member `sessionIds`) not already in `archivedSessionIds` is asked through the `workspace/session-activity` waterfall, in account order. Without `stopActivity` any reported activity rejects with WorkspaceActiveError listing every active session before anything is written. With `stopActivity` the archive is written first, and the `workspace/session-stop` providers are then asked to stop each session that reported activity: the durable archived set is what a provider\'s `agent/pre-step` gate reads through isSessionEffectivelyArchived, so every wake the stops induce is already blocked. The sessions\' own archive and pin flags are never written; their archive is derived while the workspace stays archived. An already archived id resolves without writing, asking, or stopping.',
         parameters: [{ name: 'id', description: 'The workspace to archive.' }, { name: 'options', description: 'Whether running work is stopped instead of refusing.' }],
         returns: 'resolution after durability and, with `stopActivity`, after every stop request was issued.',
       },
@@ -3778,7 +3784,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'owningWorkspaceOf(sessionId: SessionId): Workspace | undefined',
-        description: 'The workspace whose header-validated `sessionIds` include a session. Session accounting is one-owner, so at most one entity qualifies; the scan runs in registry order over the synchronous projection and performs no persistence reads.',
+        description: 'The workspace whose member `sessionIds` include a session. Session accounting is one-owner, so at most one entity qualifies; the scan runs in registry order over the synchronous projection and performs no persistence reads.',
         parameters: [{ name: 'sessionId', description: 'The session to locate.' }],
         returns: 'the owning workspace, or `undefined` when no workspace accounts the session.',
       },
@@ -4699,6 +4705,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'AttachmentId',
     declaration: 'export type AttachmentId = Branded<\'AttachmentId\'>;',
+  },
+  {
+    name: 'AttachSessionOptions',
+    declaration: 'export interface AttachSessionOptions {\n    readonly assigned?: boolean;\n}',
   },
   {
     name: 'AuthorizationEntry',
@@ -5975,6 +5985,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ModTier',
     declaration: 'export type ModTier = \'prepend\' | \'user\' | \'append\' | \'builtin\' | \'core\';',
+  },
+  {
+    name: 'MoveSessionResult',
+    declaration: 'export interface MoveSessionResult {\n    readonly previousWorkspaceId: WorkspaceId | undefined;\n}',
   },
   {
     name: 'NativeFileApplication',
@@ -8298,7 +8312,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'Workspace',
-    declaration: 'export interface Workspace {\n    readonly id: WorkspaceId;\n    readonly path: string;\n    readonly title: string;\n    readonly createdAt: string;\n    readonly updatedAt: string;\n    readonly sessionIds: readonly SessionId[];\n    setTitle(title: string): Promise<void>;\n    attachSession(sessionId: SessionId): Promise<void>;\n    insertSessionBefore(sessionId: SessionId, beforeSessionId?: SessionId): Promise<void>;\n    detachSession(sessionId: SessionId): Promise<void>;\n    status(): Promise<\'ok\' | \'missing-dir\'>;\n}',
+    declaration: 'export interface Workspace {\n    readonly id: WorkspaceId;\n    readonly path: string;\n    readonly title: string;\n    readonly createdAt: string;\n    readonly updatedAt: string;\n    readonly sessionIds: readonly SessionId[];\n    readonly assignedSessionIds: readonly SessionId[];\n    setTitle(title: string): Promise<void>;\n    attachSession(sessionId: SessionId, options?: AttachSessionOptions): Promise<void>;\n    insertSessionBefore(sessionId: SessionId, beforeSessionId?: SessionId): Promise<void>;\n    detachSession(sessionId: SessionId): Promise<void>;\n    status(): Promise<\'ok\' | \'missing-dir\'>;\n}',
   },
   {
     name: 'WorkspaceArchivedWorkspacesValue',

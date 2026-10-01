@@ -25,6 +25,8 @@ import {
 } from '@deepseek-ai/dsh-session-persistence'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SessionQueryEngine from '@deepseek-ai/dsh-session-query'
+import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
+import type { Workspace } from '@deepseek-ai/dsh-workspace'
 import { vi } from 'vitest'
 import {
   RemoteError,
@@ -222,6 +224,29 @@ class TestSessionQuery extends SessionQueryEngine {
 
   override searchEvents(): Promise<never> {
     return Promise.reject(new Error('event search is not configured in this test'))
+  }
+}
+
+/**
+ * A complete `Workspace` whose accounting and attach are the test's, with
+ * every other member inert.
+ * @param overrides - the members the test observes; `attachSession` is required.
+ * @returns a typed Workspace double.
+ */
+export function testWorkspace(overrides: Partial<Workspace> & Pick<Workspace, 'attachSession'>): Workspace {
+  return {
+    id: WorkspaceId('workspace-1'),
+    path: '/proj',
+    title: 'proj',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    sessionIds: [],
+    assignedSessionIds: [],
+    setTitle: () => Promise.resolve(),
+    insertSessionBefore: () => Promise.resolve(),
+    detachSession: () => Promise.resolve(),
+    status: () => Promise.resolve('ok'),
+    ...overrides,
   }
 }
 

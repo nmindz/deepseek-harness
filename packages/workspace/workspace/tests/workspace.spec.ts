@@ -15,11 +15,14 @@ import type { SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persis
 import { MemoryMediaPool, MemoryStorageBackend } from '../../../storage/storage-domain/tests/helpers/memory-backend.ts'
 import WorkspaceRegistry, {
   WorkspaceActiveError,
+  WorkspaceArchivedError,
   WorkspaceArchivedSessionPinError,
   WorkspaceId,
   type workspaceDomainState,
+  type workspaceRecord,
   WorkspaceMoveInvalidError,
   WorkspaceOrderInvalidError,
+  WorkspaceUnknownSessionError,
   WorkspaceUnknownWorkspaceError,
 } from '../src/index.ts'
 import type { WorkspaceDomainState, WorkspaceRecord } from '../src/index.ts'
@@ -41,6 +44,8 @@ interface HarnessOptions {
   liveSessions?: SessionHeader[]
   sessionStore?: boolean
   backend?: StorageBackend
+  /** Observe the context before the registry plugin boots, for startup-time spies. */
+  beforeBoot?: (ctx: Context) => void
 }
 
 /** Boot the real storage/domain/registry composition over controllable header-only peers. */
@@ -72,6 +77,7 @@ async function harness(options: HarnessOptions = {}) {
 
   const changes: DomainChanged[] = []
   ctx.on('domain/changed', (change) => { changes.push(change) })
+  options.beforeBoot?.(ctx)
   const fiber = await ctx.plugin(WorkspaceRegistry)
   const initChanges = [...changes]
   changes.length = 0
@@ -139,11 +145,17 @@ function selectiveFailureBackend(
   }
 }
 
-function record(path: string, sessionIds: string[], createdAt = '2026-07-24T00:00:00.000Z'): WorkspaceRecord {
+function record(
+  path: string,
+  sessionIds: string[],
+  createdAt = '2026-07-24T00:00:00.000Z',
+  assignedSessionIds: string[] = [],
+): WorkspaceRecord {
   return {
     path,
     title: basename(path),
     sessionIds: sessionIds.map(SessionId),
+    assignedSessionIds: assignedSessionIds.map(SessionId),
     createdAt,
     updatedAt: createdAt,
   }
@@ -156,8 +168,11 @@ function record(path: string, sessionIds: string[], createdAt = '2026-07-24T00:0
  */
 type StoredDomainState = z.input<typeof workspaceDomainState>
 
+/** A record as written to the medium; media written before `assignedSessionIds` existed omit the field. */
+type StoredRecord = z.input<typeof workspaceRecord>
+
 function storedPool(
-  entries: Array<[string, WorkspaceRecord]>,
+  entries: Array<[string, StoredRecord]>,
   state: StoredDomainState,
 ): MemoryMediaPool {
   const pool = new MemoryMediaPool()
@@ -1734,6 +1749,320 @@ describe('effective session archive', () => {
     await h.registry.unarchiveWorkspace(homeWorkspace.id)
     await h.registry.pinSession(SessionId('inside'))
     expect(h.registry.pinnedSessionIds).toEqual(['inside', 'outside'])
+  })
+})
+
+describe('explicit session assignment', () => {
+  it('parses a record written before assignedSessionIds existed and stamps the field at its next write', async () => {
+    const dir = await makeDir('assign-legacy')
+    const id = WorkspaceId('00000000-0000-4000-8000-000000000030')
+    const legacy: StoredRecord = {
+      path: dir,
+      title: 'legacy',
+      sessionIds: [SessionId('s1')],
+      createdAt: '2026-07-24T00:00:00.000Z',
+      updatedAt: '2026-07-24T00:00:00.000Z',
+    }
+    const pool = storedPool([[id, legacy]], { initialized: true, workspaceIds: [id] })
+    const h = await harness({ pool, sessions: [header('s1', dir)] })
+    const workspace = h.registry.get(id)!
+    expect(workspace.assignedSessionIds).toEqual([])
+    expect(workspace.sessionIds).toEqual(['s1'])
+    expect(storedRecord(pool, id)).not.toHaveProperty('assignedSessionIds')
+
+    await workspace.setTitle('written')
+    expect(storedRecord(pool, id).assignedSessionIds).toEqual([])
+  })
+
+  it('attaches a session from another directory, or with no usable directory, when assigned', async () => {
+    const home = await makeDir('assign-home')
+    const elsewhere = await makeDir('assign-elsewhere')
+    const gone = await makeDir('assign-gone')
+    const h = await harness({ sessions: [header('near', home)], liveSessions: [header('live', elsewhere)] })
+    // Published after bootstrap so no workspace forms around their directories.
+    h.setSessions([header('near', home), header('far', elsewhere), header('no-cwd'), header('gone', gone)])
+    await rm(gone, { recursive: true })
+    const workspace = h.registry.list()[0]!
+    expect(workspace.sessionIds).toEqual(['near'])
+
+    await workspace.attachSession(SessionId('far'), { assigned: true })
+    await workspace.attachSession(SessionId('no-cwd'), { assigned: true })
+    await workspace.attachSession(SessionId('gone'), { assigned: true })
+    await workspace.attachSession(SessionId('live'), { assigned: true })
+    // Assigned members are prepended like any attach and are members without a cwd match.
+    expect(workspace.sessionIds).toEqual(['live', 'gone', 'no-cwd', 'far', 'near'])
+    expect(workspace.assignedSessionIds).toEqual(['far', 'no-cwd', 'gone', 'live'])
+    expect(storedRecord(h.pool, workspace.id)).toMatchObject({
+      sessionIds: ['live', 'gone', 'no-cwd', 'far', 'near'],
+      assignedSessionIds: ['far', 'no-cwd', 'gone', 'live'],
+    })
+    expect(h.registry.owningWorkspaceOf(SessionId('no-cwd'))).toBe(workspace)
+
+    const written = h.changes.length
+    await expect(workspace.attachSession(SessionId('ghost'), { assigned: true })).rejects.toThrow(/no such session/)
+    expect(h.changes).toHaveLength(written)
+  })
+
+  it('marks an accounted session assigned in one write and keeps repeats write-free', async () => {
+    const dir = await makeDir('assign-mark')
+    const h = await harness({ sessions: [header('s1', dir)] })
+    const workspace = h.registry.list()[0]!
+    expect(workspace.sessionIds).toEqual(['s1'])
+    expect(workspace.assignedSessionIds).toEqual([])
+    const written = h.changes.length
+
+    await workspace.attachSession(SessionId('s1'), { assigned: true })
+    expect(workspace.assignedSessionIds).toEqual(['s1'])
+    expect(workspace.sessionIds).toEqual(['s1'])
+    expect(h.changes).toHaveLength(written + 1)
+
+    await workspace.attachSession(SessionId('s1'), { assigned: true })
+    await workspace.attachSession(SessionId('s1'))
+    // Neither the assigned repeat nor a plain attach of an assigned member writes or unmarks.
+    expect(h.changes).toHaveLength(written + 1)
+    expect(workspace.assignedSessionIds).toEqual(['s1'])
+    expect(h.list).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps assigned members through the durable prune and drops them only on detach', async () => {
+    const owned = await makeDir('assign-prune-owned')
+    const elsewhere = await makeDir('assign-prune-elsewhere')
+    const id = WorkspaceId('00000000-0000-4000-8000-000000000031')
+    const pool = storedPool(
+      [[id, record(owned, ['good', 'far', 'stray'], '2026-07-24T00:00:00.000Z', ['far'])]],
+      { initialized: true, workspaceIds: [id] },
+    )
+    const h = await harness({
+      pool,
+      sessions: [header('good', owned), header('far', elsewhere), header('stray', elsewhere)],
+    })
+    const workspace = h.registry.get(id)!
+    // The assigned mismatch is a member; the unassigned mismatch is filtered.
+    expect(workspace.sessionIds).toEqual(['good', 'far'])
+    expect(h.registry.owningWorkspaceOf(SessionId('far'))).toBe(workspace)
+
+    await workspace.setTitle('pruned')
+    expect(storedRecord(pool, id)).toMatchObject({ sessionIds: ['good', 'far'], assignedSessionIds: ['far'] })
+
+    await workspace.detachSession(SessionId('far'))
+    expect(workspace.sessionIds).toEqual(['good'])
+    expect(workspace.assignedSessionIds).toEqual([])
+    expect(storedRecord(pool, id)).toMatchObject({ sessionIds: ['good'], assignedSessionIds: [] })
+    expect(h.registry.owningWorkspaceOf(SessionId('far'))).toBeUndefined()
+  })
+
+  it('does not report an assigned candidate as filtered at startup', async () => {
+    const owned = await makeDir('assign-report-owned')
+    const elsewhere = await makeDir('assign-report-elsewhere')
+    const id = WorkspaceId('00000000-0000-4000-8000-000000000032')
+    const pool = storedPool(
+      [[id, record(owned, ['far', 'stray'], '2026-07-24T00:00:00.000Z', ['far'])]],
+      { initialized: true, workspaceIds: [id] },
+    )
+    const warnings: string[] = []
+    await harness({
+      pool,
+      sessions: [header('far', elsewhere), header('stray', elsewhere)],
+      beforeBoot: (ctx) => {
+        vi.spyOn(ctx.logger, 'warn').mockImplementation((message: string) => { warnings.push(message) })
+      },
+    })
+    expect(warnings).toEqual([expect.stringContaining(`workspace '${id}' filtered session 'stray'`)])
+  })
+
+  it('rejects an assigned id the workspace does not account, and a repeated assigned id, at startup', async () => {
+    const dir = await makeDir('assign-corrupt')
+    const other = await makeDir('assign-corrupt-other')
+    const id = WorkspaceId('00000000-0000-4000-8000-000000000033')
+    const otherId = WorkspaceId('00000000-0000-4000-8000-000000000034')
+
+    const unaccounted = storedPool(
+      [[id, record(dir, ['s1'], '2026-07-24T00:00:00.000Z', ['ghost'])]],
+      { initialized: true, workspaceIds: [id] },
+    )
+    await expect(harness({ pool: unaccounted }))
+      .rejects.toThrow(`workspace domain is inconsistent: workspace '${id}' assigns session 'ghost' it does not account`)
+
+    const foreign = storedPool(
+      [[id, record(dir, ['s1'])], [otherId, record(other, [], '2026-07-24T00:00:00.000Z', ['s1'])]],
+      { initialized: true, workspaceIds: [id, otherId] },
+    )
+    await expect(harness({ pool: foreign }))
+      .rejects.toThrow(`workspace '${otherId}' assigns session 's1' it does not account`)
+
+    const repeated = storedPool(
+      [[id, record(dir, ['s1'], '2026-07-24T00:00:00.000Z', ['s1', 's1'])]],
+      { initialized: true, workspaceIds: [id] },
+    )
+    await expect(harness({ pool: repeated }))
+      .rejects.toThrow(`workspace domain is inconsistent: workspace '${id}' assigns session 's1' twice`)
+  })
+})
+
+describe('moveSession', () => {
+  /**
+   * Boot `home` (s2, s1) and `other` (s3) from history, then publish the
+   * Ungrouped `stray`, `no-cwd`, and `gone` sessions so no workspace forms
+   * around their directories.
+   */
+  async function movable(options: Omit<HarnessOptions, 'sessions'> = {}) {
+    const home = await makeDir('move-home')
+    const other = await makeDir('move-other')
+    const elsewhere = await makeDir('move-elsewhere')
+    const gone = await makeDir('move-gone')
+    const grouped = [header('s1', home, 100), header('s2', home, 200), header('s3', other, 300)]
+    const headers = [...grouped, header('stray', elsewhere, 400), header('no-cwd', undefined, 500), header('gone', gone, 600)]
+    const result = await harness({ ...options, sessions: grouped })
+    result.setSessions(headers)
+    await rm(gone, { recursive: true })
+    const homeWorkspace = result.registry.list().find(workspace => workspace.path === home)!
+    const otherWorkspace = result.registry.list().find(workspace => workspace.path === other)!
+    const recordWrites = () => result.changes.filter(change => change.table === 'workspaces').map(change => change.key)
+    return { ...result, headers, homeWorkspace, otherWorkspace, recordWrites }
+  }
+
+  it('moves a member between workspaces as an assignment, writing the detach before the attach', async () => {
+    const h = await movable()
+    expect(h.homeWorkspace.sessionIds).toEqual(['s2', 's1'])
+
+    await expect(h.registry.moveSession(SessionId('s1'), h.otherWorkspace.id))
+      .resolves.toEqual({ previousWorkspaceId: h.homeWorkspace.id })
+    expect(h.homeWorkspace.sessionIds).toEqual(['s2'])
+    expect(h.otherWorkspace.sessionIds).toEqual(['s1', 's3'])
+    expect(h.otherWorkspace.assignedSessionIds).toEqual(['s1'])
+    expect(h.registry.owningWorkspaceOf(SessionId('s1'))).toBe(h.otherWorkspace)
+    expect(h.recordWrites()).toEqual([h.homeWorkspace.id, h.otherWorkspace.id])
+    expect(storedRecord(h.pool, h.homeWorkspace.id)).toMatchObject({ sessionIds: ['s2'], assignedSessionIds: [] })
+    expect(storedRecord(h.pool, h.otherWorkspace.id))
+      .toMatchObject({ sessionIds: ['s1', 's3'], assignedSessionIds: ['s1'] })
+
+    // Moving back home is an assignment too: the cwd match no longer decides membership.
+    await expect(h.registry.moveSession(SessionId('s1'), h.homeWorkspace.id))
+      .resolves.toEqual({ previousWorkspaceId: h.otherWorkspace.id })
+    expect(h.homeWorkspace.sessionIds).toEqual(['s1', 's2'])
+    expect(h.homeWorkspace.assignedSessionIds).toEqual(['s1'])
+    expect(h.otherWorkspace.sessionIds).toEqual(['s3'])
+    expect(h.otherWorkspace.assignedSessionIds).toEqual([])
+  })
+
+  it('moves an Ungrouped session in, a member out, and treats a same-owner move as write-free', async () => {
+    const h = await movable()
+
+    await expect(h.registry.moveSession(SessionId('stray'), h.homeWorkspace.id))
+      .resolves.toEqual({ previousWorkspaceId: undefined })
+    expect(h.homeWorkspace.sessionIds).toEqual(['stray', 's2', 's1'])
+    expect(h.recordWrites()).toEqual([h.homeWorkspace.id])
+    const written = h.changes.length
+
+    await expect(h.registry.moveSession(SessionId('stray'), h.homeWorkspace.id))
+      .resolves.toEqual({ previousWorkspaceId: h.homeWorkspace.id })
+    expect(h.changes).toHaveLength(written)
+
+    await expect(h.registry.moveSession(SessionId('s3')))
+      .resolves.toEqual({ previousWorkspaceId: h.otherWorkspace.id })
+    expect(h.otherWorkspace.sessionIds).toEqual([])
+    expect(h.registry.owningWorkspaceOf(SessionId('s3'))).toBeUndefined()
+    expect(storedRecord(h.pool, h.otherWorkspace.id).sessionIds).toEqual([])
+    const afterDetach = h.changes.length
+
+    // Ungrouped to Ungrouped names no owner and no target, so nothing is written.
+    await expect(h.registry.moveSession(SessionId('s3'))).resolves.toEqual({ previousWorkspaceId: undefined })
+    expect(h.changes).toHaveLength(afterDetach)
+  })
+
+  it('rescues sessions whose directory is unrecorded or gone, and moves a cwd-filtered candidate out of its holder', async () => {
+    const h = await movable()
+
+    await h.registry.moveSession(SessionId('no-cwd'), h.homeWorkspace.id)
+    await h.registry.moveSession(SessionId('gone'), h.homeWorkspace.id)
+    expect(h.homeWorkspace.sessionIds).toEqual(['gone', 'no-cwd', 's2', 's1'])
+    expect(h.registry.isSessionEffectivelyArchived(SessionId('gone'))).toBe(false)
+
+    // A candidate the account names but the cwd filter hides still has a holder to leave.
+    const hiddenId = WorkspaceId('00000000-0000-4000-8000-000000000035')
+    const hiddenDir = await makeDir('move-hidden')
+    const pool = storedPool(
+      [[hiddenId, record(hiddenDir, ['drifted'])]],
+      { initialized: true, workspaceIds: [hiddenId] },
+    )
+    const drifted = await harness({ pool, sessions: [header('drifted', h.homeWorkspace.path)] })
+    const hidden = drifted.registry.get(hiddenId)!
+    expect(hidden.sessionIds).toEqual([])
+    const target = await drifted.registry.create(h.homeWorkspace.path)
+    await expect(drifted.registry.moveSession(SessionId('drifted'), target.id))
+      .resolves.toEqual({ previousWorkspaceId: hiddenId })
+    expect(storedRecord(pool, hiddenId).sessionIds).toEqual([])
+    expect(target.sessionIds).toEqual(['drifted'])
+  })
+
+  it('leaves the registry-global pin and archive sets untouched', async () => {
+    const h = await movable()
+    await h.registry.pinSession(SessionId('s1'))
+    await h.registry.archiveSession(SessionId('s2'))
+
+    await h.registry.moveSession(SessionId('s1'), h.otherWorkspace.id)
+    await h.registry.moveSession(SessionId('s2'), h.otherWorkspace.id)
+    expect(h.registry.pinnedSessionIds).toEqual(['s1'])
+    expect(h.registry.archivedSessionIds).toEqual(['s2'])
+    expect(h.registry.isSessionEffectivelyArchived(SessionId('s2'))).toBe(true)
+    expect(h.otherWorkspace.sessionIds).toEqual(['s2', 's1', 's3'])
+  })
+
+  it('rejects an unknown target, an archived target, and an unknown session before writing', async () => {
+    const h = await movable()
+    await h.registry.archiveWorkspace(h.otherWorkspace.id)
+    const written = h.changes.length
+
+    await expect(h.registry.moveSession(SessionId('s1'), WorkspaceId('ghost')))
+      .rejects.toBeInstanceOf(WorkspaceUnknownWorkspaceError)
+    await expect(h.registry.moveSession(SessionId('ghost'), WorkspaceId('ghost')))
+      .rejects.toThrow(/cannot move workspace 'ghost': the registry holds no such workspace/)
+    await expect(h.registry.moveSession(SessionId('s1'), h.otherWorkspace.id))
+      .rejects.toBeInstanceOf(WorkspaceArchivedError)
+    await expect(h.registry.moveSession(SessionId('s1'), h.otherWorkspace.id))
+      .rejects.toThrow(`cannot move session into workspace '${h.otherWorkspace.id}': the workspace is archived`)
+    await expect(h.registry.moveSession(SessionId('ghost'), h.homeWorkspace.id))
+      .rejects.toBeInstanceOf(WorkspaceUnknownSessionError)
+    await expect(h.registry.moveSession(SessionId('ghost')))
+      .rejects.toThrow(/cannot move session 'ghost': live sessions and session persistence hold no such session/)
+    expect(h.changes).toHaveLength(written)
+    expect(h.homeWorkspace.sessionIds).toEqual(['s2', 's1'])
+
+    // A persistence fault is itself the error, never an unknown session.
+    h.list.mockRejectedValueOnce(new Error('persistence backend down'))
+    await expect(h.registry.moveSession(SessionId('unlisted'), h.homeWorkspace.id))
+      .rejects.toThrow(/persistence backend down/)
+    expect(h.changes).toHaveLength(written)
+  })
+
+  it('leaves the session Ungrouped when the attach write fails after the detach, and the medium validates on restart', async () => {
+    const pool = new MemoryMediaPool()
+    const h = await movable({ pool })
+    let armed = false
+    h.ctx.on('domain/changed', (change) => {
+      if (armed || change.table !== 'workspaces' || change.key !== h.homeWorkspace.id) return
+      armed = true
+      pool.failNextWrites = 1
+    })
+
+    await expect(h.registry.moveSession(SessionId('s1'), h.otherWorkspace.id)).rejects.toThrow(/injected write failure/)
+    expect(pool.failNextWrites).toBe(0)
+    // Detach landed, attach did not: one owner at most, so the session is Ungrouped rather than doubled.
+    expect(h.homeWorkspace.sessionIds).toEqual(['s2'])
+    expect(h.otherWorkspace.sessionIds).toEqual(['s3'])
+    expect(h.registry.owningWorkspaceOf(SessionId('s1'))).toBeUndefined()
+    expect(storedRecord(pool, h.homeWorkspace.id).sessionIds).toEqual(['s2'])
+    expect(storedRecord(pool, h.otherWorkspace.id).sessionIds).toEqual(['s3'])
+    await h.fiber.dispose()
+
+    const restarted = await harness({ pool, sessions: h.headers })
+    expect(restarted.registry.owningWorkspaceOf(SessionId('s1'))).toBeUndefined()
+    expect(restarted.registry.list().map(workspace => workspace.sessionIds)).toEqual([['s3'], ['s2']])
+
+    // The interrupted move is retryable and completes as one assignment.
+    await expect(restarted.registry.moveSession(SessionId('s1'), h.otherWorkspace.id))
+      .resolves.toEqual({ previousWorkspaceId: undefined })
+    expect(restarted.registry.get(h.otherWorkspace.id)!.sessionIds).toEqual(['s1', 's3'])
   })
 })
 
