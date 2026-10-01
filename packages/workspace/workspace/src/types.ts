@@ -8,6 +8,11 @@
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {} from '@deepseek-ai/dsh-typert-protocol'
+import type { WorkspaceAppearance } from './appearance.ts'
+
+export type {
+  WorkspaceAppearance, WorkspaceColor, WorkspaceEmojiRef, WorkspaceIconId, WorkspaceIconRef,
+} from './appearance.ts'
 
 /**
  * Identifies one workspace record. A generated uuid, never the path: path
@@ -113,12 +118,25 @@ export interface Workspace {
    */
   readonly assignedSessionIds: readonly SessionId[]
 
+  /** User-chosen accent color and icon; `undefined` when both are the default. */
+  readonly appearance: WorkspaceAppearance | undefined
+
   /**
    * Replace the display title durably.
    * @param title - New title; any string, duplicates across workspaces allowed.
    * @returns resolution after durability.
    */
   setTitle(title: string): Promise<void>
+
+  /**
+   * Replace the accent color and icon durably. An empty object clears both;
+   * a value equal to the current one resolves without writing, aside from the
+   * durable filtered-candidate prune every accepted mutation performs. The
+   * caller validates the fields; this method trusts them.
+   * @param appearance - Color and icon to store; omitted fields are cleared.
+   * @returns resolution after durability.
+   */
+  setAppearance(appearance: WorkspaceAppearance): Promise<void>
 
   /**
    * Prepend a session to this workspace's candidate account. Without

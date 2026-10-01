@@ -12,7 +12,7 @@ import { stat } from 'node:fs/promises'
 import type { SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import type { WorkspaceRecord } from './spec.ts'
-import type { AttachSessionOptions, Workspace, WorkspaceId } from './types.ts'
+import type { AttachSessionOptions, Workspace, WorkspaceAppearance, WorkspaceId } from './types.ts'
 import { realpathNormalize } from './paths.ts'
 
 /** An insertSessionBefore request named a session or anchor not on the account (storage failures stay plain errors). */
@@ -106,8 +106,22 @@ export class WorkspaceEntity implements Workspace {
     return this.record.assignedSessionIds
   }
 
+  get appearance(): WorkspaceAppearance | undefined {
+    return this.record.appearance
+  }
+
   async setTitle(title: string): Promise<void> {
     await this.mutate(record => ({ ...record, title }))
+  }
+
+  async setAppearance(appearance: WorkspaceAppearance): Promise<void> {
+    const next = normalizeAppearance(appearance)
+    await this.mutate((record) => {
+      if (sameAppearance(record.appearance, next)) return record
+      // A reset deletes the field so the stored record carries no `appearance` key.
+      const { appearance: _current, ...rest } = record
+      return next === undefined ? rest : { ...rest, appearance: next }
+    })
   }
 
   async attachSession(sessionId: SessionId, options: AttachSessionOptions = {}): Promise<void> {
@@ -253,6 +267,20 @@ export class WorkspaceEntity implements Workspace {
     }
     this.record = next
   }
+}
+
+/** Drop absent fields; an appearance with neither field is the default and is stored as no field at all. */
+function normalizeAppearance(appearance: WorkspaceAppearance): WorkspaceAppearance | undefined {
+  const normalized: WorkspaceAppearance = {
+    ...appearance.color === undefined ? {} : { color: appearance.color },
+    ...appearance.icon === undefined ? {} : { icon: appearance.icon },
+  }
+  return normalized.color === undefined && normalized.icon === undefined ? undefined : normalized
+}
+
+/** Field-wise equality of two normalized appearances. */
+function sameAppearance(left: WorkspaceAppearance | undefined, right: WorkspaceAppearance | undefined): boolean {
+  return left?.color === right?.color && left?.icon === right?.icon
 }
 
 /** The membership rule over one record: an explicit assignment, or a header whose canonical cwd is the workspace path. */

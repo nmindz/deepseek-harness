@@ -17,9 +17,11 @@ export type {
 } from './model.ts'
 export { WorkspaceArchiveError, WorkspaceController, WorkspaceCreateError, WorkspaceMoveError } from './service.ts'
 export type { IWorkspaces, WorkspaceSource } from './service.ts'
+export { WORKSPACE_COLORS, WORKSPACE_ICON_IDS, isWorkspaceIconRef, workspaceIconRef } from './appearance.ts'
 export type {
-  SessionActivity, SessionActivityItem, SessionActivityKind, SessionActivityKindMap, WorkspaceId,
-  WorkspaceMoveSessionValue, WorkspaceView,
+  SessionActivity, SessionActivityItem, SessionActivityKind, SessionActivityKindMap, WorkspaceAppearance,
+  WorkspaceColor, WorkspaceEmojiRef, WorkspaceIconId, WorkspaceIconRef, WorkspaceId, WorkspaceMoveSessionValue,
+  WorkspaceView,
 } from '../types.ts'
 
 type WorkspaceBaselineFrame = Extract<WorkspaceFollowFrame, { type: 'baseline' }>

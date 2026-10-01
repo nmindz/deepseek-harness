@@ -19,6 +19,7 @@ import type {
   WorkspaceOrderValue,
   WorkspacePinSessionRequest,
   WorkspacePinValue,
+  WorkspaceSetAppearanceRequest,
   WorkspaceUnarchiveSessionRequest,
   WorkspaceUnarchiveWorkspaceRequest,
   WorkspaceUnpinSessionRequest,
@@ -134,6 +135,21 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
    */
   async rename(workspaceId: WorkspaceId, title: string): Promise<RemoteResult<WorkspaceValue>> {
     const result = await this.remote.rename({ workspaceId, title })
+    if (result.ok) this.upsert(result.value.workspace)
+    return result
+  }
+
+  /**
+   * Replace a Workspace's accent color and icon and merge the unary result immediately.
+   * @param workspaceId - target Workspace.
+   * @param appearance - complete appearance to store; an empty object resets both fields.
+   * @returns generated Remote result.
+   */
+  async setAppearance(
+    workspaceId: WorkspaceId,
+    appearance: WorkspaceSetAppearanceRequest['appearance'],
+  ): Promise<RemoteResult<WorkspaceValue>> {
+    const result = await this.remote.setAppearance({ workspaceId, appearance })
     if (result.ok) this.upsert(result.value.workspace)
     return result
   }

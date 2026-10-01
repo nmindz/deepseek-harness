@@ -7,13 +7,25 @@ import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import Storage from '@deepseek-ai/dsh-storage'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
-import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
+import WorkspaceRegistry, { WORKSPACE_COLORS, WORKSPACE_ICON_IDS, isWorkspaceIconRef, workspaceIconRef } from '@deepseek-ai/dsh-workspace'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
-import WorkspaceController from '../src/index.ts'
+import WorkspaceController, * as hostFace from '../src/index.ts'
 import { DEFAULT_WORKSPACE_DIRECTORY } from '../src/default-workspace.ts'
 import { WorkspaceFeed } from '../src/feed.ts'
 import type { WorkspaceFollowFrame } from '../src/types.ts'
 import { MemoryStorageBackend } from '../../../storage/storage-domain/tests/helpers/memory-backend.ts'
+
+describe('appearance vocabulary re-export', () => {
+  it('serves the domain values unchanged from the Host face', () => {
+    expect(hostFace.WORKSPACE_COLORS).toBe(WORKSPACE_COLORS)
+    expect(hostFace.WORKSPACE_ICON_IDS).toBe(WORKSPACE_ICON_IDS)
+    expect(hostFace.isWorkspaceIconRef).toBe(isWorkspaceIconRef)
+    expect(hostFace.workspaceIconRef).toBe(workspaceIconRef)
+  })
+})
+
+/** The one emoji the appearance tests paint with, minted the way product code must. */
+const TARGET = workspaceIconRef('emoji:🎯')
 
 // The controller relays whatever families the providers report; this suite merges its own.
 declare module '@deepseek-ai/dsh-workspace/types' {
@@ -125,6 +137,47 @@ describe('WorkspaceController commands', () => {
       .rejects.toMatchObject({ code: 'workspace/name-conflict' })
     await expect(controller.delete({ workspaceId: 'missing' as WorkspaceId }))
       .rejects.toMatchObject({ code: 'workspace/not-found' })
+  })
+
+  it('stores, replaces, and resets a Workspace appearance and refuses payloads outside the grammar', async () => {
+    const { controller, ctx, root } = await harness()
+    const created = await controller.create({ path: stageDir(root, 'painted') })
+    const workspaceId = created.workspace.workspaceId
+    expect(created.workspace).not.toHaveProperty('appearance')
+
+    const painted = await controller.setAppearance({ workspaceId, appearance: { color: 'green', icon: TARGET } })
+    expect(painted.workspace).toMatchObject({ workspaceId, appearance: { color: 'green', icon: TARGET } })
+    expect(ctx.workspaceRegistry.get(workspaceId)?.appearance).toEqual({ color: 'green', icon: TARGET })
+    // The projection is detached from the entity's record.
+    expect(painted.workspace.appearance).not.toBe(ctx.workspaceRegistry.get(workspaceId)?.appearance)
+
+    const glyph = await controller.setAppearance({ workspaceId, appearance: { icon: 'icon:code' } })
+    expect(glyph.workspace.appearance).toEqual({ icon: 'icon:code' })
+
+    // A reset drops the key from the row instead of returning an empty object.
+    const reset = await controller.setAppearance({ workspaceId, appearance: {} })
+    expect(reset.workspace).not.toHaveProperty('appearance')
+    expect(ctx.workspaceRegistry.get(workspaceId)?.appearance).toBeUndefined()
+
+    // Every refusal happens before any write: the entity keeps its last value.
+    await controller.setAppearance({ workspaceId, appearance: { color: 'red' } })
+    const invalid: unknown[] = [
+      { color: 'pink' },
+      { icon: 'icon:nope' },
+      { icon: 'emoji:🎯🎯' },
+      { icon: 'emoji:' },
+      { color: 'blue', label: 'extra' },
+      'blue',
+      undefined,
+    ]
+    for (const appearance of invalid) {
+      const refused = controller.setAppearance({ workspaceId, appearance: appearance as never })
+      await expect(refused).rejects.toMatchObject({ code: 'gateway/bad-request' })
+      await expect(refused).rejects.toThrow('Workspace appearance is invalid')
+    }
+    expect(ctx.workspaceRegistry.get(workspaceId)?.appearance).toEqual({ color: 'red' })
+    await expect(controller.setAppearance({ workspaceId: 'missing' as WorkspaceId, appearance: { color: 'blue' } }))
+      .rejects.toMatchObject({ code: 'workspace/not-found', details: { workspaceId: 'missing' } })
   })
 
   it('preserves Remote failures and propagates unexpected registry failures', async () => {
@@ -483,6 +536,18 @@ describe('WorkspaceController follow', () => {
     await expect(nextFrame(iterator)).resolves.toMatchObject({
       type: 'upsert', workspace: { title: 'renamed' },
     })
+    // An appearance write rides the upsert increment with the field; a reset
+    // rides it without the key, so a consumer merging the row drops the value.
+    await controller.setAppearance({ workspaceId: first.workspace.workspaceId, appearance: { color: 'amber', icon: 'icon:gauge' } })
+    await expect(nextFrame(iterator)).resolves.toMatchObject({
+      type: 'upsert', workspace: { title: 'renamed', appearance: { color: 'amber', icon: 'icon:gauge' } },
+    })
+    expect(new WorkspaceFeed(ctx).baseline().items.map(item => item.appearance)).toEqual([{ color: 'amber', icon: 'icon:gauge' }])
+    await controller.setAppearance({ workspaceId: first.workspace.workspaceId, appearance: {} })
+    const resetFrame = await nextFrame(iterator)
+    expect(resetFrame).toMatchObject({ type: 'upsert', workspace: { title: 'renamed' } })
+    if (resetFrame.type !== 'upsert') throw new Error('expected an upsert frame')
+    expect(resetFrame.workspace).not.toHaveProperty('appearance')
 
     const second = await controller.create({ path: stageDir(root, 'second') })
     await expect(nextFrame(iterator)).resolves.toMatchObject({

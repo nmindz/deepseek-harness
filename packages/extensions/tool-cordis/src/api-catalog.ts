@@ -3612,6 +3612,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the updated Workspace projection.',
       },
       {
+        signature: '@Remote(\'setAppearance\') setAppearance(request: WorkspaceSetAppearanceRequest): Promise<WorkspaceValue>',
+        description: 'Replace one Workspace\'s accent color and icon; an empty `appearance` resets both. A payload outside the palette or icon grammar fails as `gateway/bad-request`, an unknown Workspace as `workspace/not-found`.',
+        parameters: [{ name: 'request', description: 'Workspace identity and the complete appearance to store.' }],
+        returns: 'the updated complete Workspace row.',
+      },
+      {
         signature: '@Remote(\'delete\') delete(request: WorkspaceDeleteRequest): Promise<WorkspaceDeleteValue>',
         description: 'Remove one Workspace registration while retaining files and Sessions.',
         parameters: [{ name: 'request', description: 'Workspace identity to remove.' }],
@@ -8318,7 +8324,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'Workspace',
-    declaration: 'export interface Workspace {\n    readonly id: WorkspaceId;\n    readonly path: string;\n    readonly title: string;\n    readonly createdAt: string;\n    readonly updatedAt: string;\n    readonly sessionIds: readonly SessionId[];\n    readonly assignedSessionIds: readonly SessionId[];\n    setTitle(title: string): Promise<void>;\n    attachSession(sessionId: SessionId, options?: AttachSessionOptions): Promise<void>;\n    insertSessionBefore(sessionId: SessionId, beforeSessionId?: SessionId): Promise<void>;\n    detachSession(sessionId: SessionId): Promise<void>;\n    status(): Promise<\'ok\' | \'missing-dir\'>;\n}',
+    declaration: 'export interface Workspace {\n    readonly id: WorkspaceId;\n    readonly path: string;\n    readonly title: string;\n    readonly createdAt: string;\n    readonly updatedAt: string;\n    readonly sessionIds: readonly SessionId[];\n    readonly assignedSessionIds: readonly SessionId[];\n    readonly appearance: WorkspaceAppearance | undefined;\n    setTitle(title: string): Promise<void>;\n    setAppearance(appearance: WorkspaceAppearance): Promise<void>;\n    attachSession(sessionId: SessionId, options?: AttachSessionOptions): Promise<void>;\n    insertSessionBefore(sessionId: SessionId, beforeSessionId?: SessionId): Promise<void>;\n    detachSession(sessionId: SessionId): Promise<void>;\n    status(): Promise<\'ok\' | \'missing-dir\'>;\n}',
+  },
+  {
+    name: 'WorkspaceAppearance',
+    declaration: 'export interface WorkspaceAppearance {\n    readonly color?: WorkspaceColor;\n    readonly icon?: WorkspaceIconRef;\n}',
   },
   {
     name: 'WorkspaceArchivedWorkspacesValue',
@@ -8357,6 +8367,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface WorkspaceChangesSummary {\n    turn: number;\n    cwd: string;\n    files: WorkspaceChangedFile[];\n    total: number;\n    added: number;\n    deleted: number;\n    snapshot?: {\n        before: string;\n        after: string;\n    };\n}',
   },
   {
+    name: 'WorkspaceColor',
+    declaration: 'export type WorkspaceColor = (typeof WORKSPACE_COLORS)[number];',
+  },
+  {
     name: 'WorkspaceCreateRequest',
     declaration: 'export interface WorkspaceCreateRequest {\n    readonly path: string;\n}',
   },
@@ -8383,6 +8397,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'WorkspaceDirectoryListing',
     declaration: 'export interface WorkspaceDirectoryListing {\n    readonly path: string;\n    readonly entries: readonly WorkspaceDirectoryEntry[];\n    readonly truncated: boolean;\n}',
+  },
+  {
+    name: 'WorkspaceEmojiRef',
+    declaration: 'export type WorkspaceEmojiRef = Branded<\'WorkspaceEmojiRef\'>;',
   },
   {
     name: 'WorkspaceFileBytes',
@@ -8425,6 +8443,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type WorkspaceFollowIncrement = {\n    readonly type: \'upsert\';\n    readonly workspace: WorkspaceView;\n} | {\n    readonly type: \'remove\';\n    readonly workspaceId: WorkspaceId;\n} | {\n    readonly type: \'order\';\n    readonly workspaceIds: readonly WorkspaceId[];\n} | {\n    readonly type: \'archived\';\n    readonly archivedSessionIds: readonly SessionId[];\n} | {\n    readonly type: \'pinned\';\n    readonly pinnedSessionIds: readonly SessionId[];\n} | {\n    readonly type: \'archivedWorkspaces\';\n    readonly archivedWorkspaceIds: readonly WorkspaceId[];\n};',
   },
   {
+    name: 'WorkspaceIconId',
+    declaration: 'export type WorkspaceIconId = (typeof WORKSPACE_ICON_IDS)[number];',
+  },
+  {
+    name: 'WorkspaceIconRef',
+    declaration: 'export type WorkspaceIconRef = `icon:${WorkspaceIconId}` | WorkspaceEmojiRef;',
+  },
+  {
     name: 'WorkspaceInsertBeforeRequest',
     declaration: 'export interface WorkspaceInsertBeforeRequest {\n    readonly workspaceId: WorkspaceId;\n    readonly beforeWorkspaceId?: WorkspaceId;\n}',
   },
@@ -8457,6 +8483,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface WorkspaceRenameRequest {\n    readonly workspaceId: WorkspaceId;\n    readonly title: string;\n}',
   },
   {
+    name: 'WorkspaceSetAppearanceRequest',
+    declaration: 'export interface WorkspaceSetAppearanceRequest {\n    readonly workspaceId: WorkspaceId;\n    readonly appearance: WorkspaceAppearance;\n}',
+  },
+  {
     name: 'WorkspaceUnarchiveSessionRequest',
     declaration: 'export interface WorkspaceUnarchiveSessionRequest {\n    readonly sessionId: SessionId;\n}',
   },
@@ -8474,7 +8504,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'WorkspaceView',
-    declaration: 'export interface WorkspaceView {\n    readonly workspaceId: WorkspaceId;\n    readonly path: string;\n    readonly title: string;\n    readonly sessionIds: readonly SessionId[];\n    readonly assignedSessionIds: readonly SessionId[];\n    readonly createdAt: string;\n    readonly updatedAt: string;\n}',
+    declaration: 'export interface WorkspaceView {\n    readonly workspaceId: WorkspaceId;\n    readonly path: string;\n    readonly title: string;\n    readonly sessionIds: readonly SessionId[];\n    readonly assignedSessionIds: readonly SessionId[];\n    readonly appearance?: WorkspaceAppearance;\n    readonly createdAt: string;\n    readonly updatedAt: string;\n}',
   },
 ]
 

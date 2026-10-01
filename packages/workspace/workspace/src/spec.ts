@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
+import { WORKSPACE_COLORS, isWorkspaceIconRef } from './appearance.ts'
 import type { WorkspaceId } from './types.ts'
 
 /** Workspace id schema at the durable boundary; branding has no runtime representation. */
@@ -17,12 +18,24 @@ const workspaceId = z.string().transform(value => value as WorkspaceId)
 const sessionId = z.string().transform(value => brandString<SessionId>(value))
 
 /**
+ * User-chosen color and icon of one workspace. Each field may be absent but
+ * never `undefined`, and no other key is accepted; the color must be in the
+ * palette and the icon must satisfy {@link isWorkspaceIconRef}. Also the
+ * wire validator for the Remote `setAppearance` request.
+ */
+export const workspaceAppearance = z.object({
+  color: z.enum(WORKSPACE_COLORS).exactOptional(),
+  icon: z.string().refine(isWorkspaceIconRef).exactOptional(),
+}).strict()
+
+/**
  * Durable fields of one workspace record. `path` is the `fs.realpath` canon
  * stamped at create; `sessionIds` is the ordered ownership account (array
  * order is display order); `assignedSessionIds` marks the accounted sessions
  * a user moved in explicitly, and is always a subset of `sessionIds`;
- * timestamps are ISO-8601 strings. The assigned set is defaulted so records
- * written before the field existed parse unchanged.
+ * `appearance` is the user-chosen color and icon, absent when both are the
+ * default; timestamps are ISO-8601 strings. The assigned set is defaulted so
+ * records written before the field existed parse unchanged.
  */
 export const workspaceRecord = z.object({
   path: z.string(),
@@ -30,6 +43,8 @@ export const workspaceRecord = z.object({
   sessionIds: z.array(sessionId),
   /** Accounted sessions exempt from the canonical-cwd membership filter; each id is also in `sessionIds`. */
   assignedSessionIds: z.array(sessionId).default([]),
+  /** Accent color and icon chosen by the user; absent means the default rendering. */
+  appearance: workspaceAppearance.optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })

@@ -4,7 +4,7 @@ import { Service, type Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { RemoteFailure } from '@deepseek-ai/dsh-typert-protocol'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
-import type { WorkspaceMoveSessionValue, WorkspaceView } from '../types.ts'
+import type { WorkspaceAppearance, WorkspaceMoveSessionValue, WorkspaceView } from '../types.ts'
 import type { ClientWorkspaceModel, WorkspaceSnapshot } from './model.ts'
 
 /** Structured create failure for callers that distinguish Host business errors. */
@@ -85,6 +85,13 @@ export interface IWorkspaces {
    * @returns the renamed Workspace.
    */
   rename(workspaceId: WorkspaceId, title: string): Promise<WorkspaceView>
+  /**
+   * Replace a Workspace's accent color and icon.
+   * @param workspaceId - target Workspace.
+   * @param appearance - complete appearance to store; an empty object resets both fields.
+   * @returns the changed Workspace.
+   */
+  setAppearance(workspaceId: WorkspaceId, appearance: WorkspaceAppearance): Promise<WorkspaceView>
   /**
    * Delete a Workspace registration without deleting Sessions or files.
    * @param workspaceId - target Workspace.
@@ -184,6 +191,12 @@ export class WorkspaceController extends Service implements IWorkspaces {
   async rename(workspaceId: WorkspaceId, title: string): Promise<WorkspaceView> {
     const result = await this.model.rename(workspaceId, title)
     if (!result.ok) throw commandError('rename', result.error)
+    return result.value.workspace
+  }
+
+  async setAppearance(workspaceId: WorkspaceId, appearance: WorkspaceAppearance): Promise<WorkspaceView> {
+    const result = await this.model.setAppearance(workspaceId, appearance)
+    if (!result.ok) throw commandError('appearance', result.error)
     return result.value.workspace
   }
 

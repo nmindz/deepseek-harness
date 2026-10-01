@@ -342,6 +342,13 @@ describe('WorkspaceController', () => {
     await expect(controller.initializeDefault(new AbortController().signal)).resolves.toMatchObject({ workspaceId: 'default' })
     await expect(controller.create({ path: '/work/created' })).resolves.toMatchObject({ workspaceId: 'created' })
     await expect(controller.rename(wid('one'), 'renamed')).resolves.toMatchObject({ title: 'renamed' })
+    await expect(controller.setAppearance(wid('one'), { color: 'blue', icon: 'icon:globe' })).resolves.toMatchObject({
+      appearance: { color: 'blue', icon: 'icon:globe' },
+    })
+    expect(model.getSnapshot().items.find(item => item.workspaceId === wid('one'))?.appearance)
+      .toEqual({ color: 'blue', icon: 'icon:globe' })
+    await expect(controller.setAppearance(wid('one'), {})).resolves.not.toHaveProperty('appearance')
+    expect(model.getSnapshot().items.find(item => item.workspaceId === wid('one'))).not.toHaveProperty('appearance')
     await expect(controller.insertBefore(wid('one'))).resolves.toBeUndefined()
     await expect(controller.insertSessionBefore(wid('one'), sid('session'))).resolves.toMatchObject({
       sessionIds: ['session'],
@@ -363,6 +370,10 @@ describe('WorkspaceController', () => {
     // Each command crosses the wire as one positional request object.
     expect(mock.log.requests('workspace/create')).toEqual([{ path: '/work/created' }])
     expect(mock.log.requests('workspace/rename')).toEqual([{ workspaceId: 'one', title: 'renamed' }])
+    expect(mock.log.requests('workspace/setAppearance')).toEqual([
+      { workspaceId: 'one', appearance: { color: 'blue', icon: 'icon:globe' } },
+      { workspaceId: 'one', appearance: {} },
+    ])
     expect(mock.log.requests('workspace/insertBefore')).toEqual([{ workspaceId: 'one' }])
     expect(mock.log.requests('workspace/insertSessionBefore')).toEqual([{ workspaceId: 'one', sessionId: 'session' }])
     await expect(controller.archiveSession(sid('session'), { stopActivity: true })).resolves.toBeUndefined()
@@ -393,6 +404,9 @@ describe('WorkspaceController', () => {
 
     mock.remote.workspace.rename.mockResolvedValueOnce(err(missingWorkspace))
     await expect(controller.rename(wid('missing'), 'name')).rejects.toThrow('workspace rename failed: workspace/not-found: gone')
+    mock.remote.workspace.setAppearance.mockResolvedValueOnce(err(new RemoteError('gateway/bad-request', 'Workspace appearance is invalid: bad color', {})))
+    await expect(controller.setAppearance(wid('one'), { color: 'blue' }))
+      .rejects.toThrow('workspace appearance failed: gateway/bad-request: Workspace appearance is invalid: bad color')
     mock.remote.workspace.delete.mockResolvedValueOnce(err(missingWorkspace))
     await expect(controller.delete(wid('missing'))).rejects.toThrow('workspace delete failed: workspace/not-found: gone')
     mock.remote.workspace.insertBefore.mockResolvedValueOnce(err(missingWorkspace))
