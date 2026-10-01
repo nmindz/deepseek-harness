@@ -13,14 +13,16 @@ import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { apply, inject } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { WorkspaceBrowserInjected, WorkspacePickerInjected } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import {
-  type ArchiveSessionInjected, type ForkSessionInjected, menuOpenStateFactory, type PinSessionInjected,
-  type RenameSessionInjected, type RowToastInjected, type SessionArchiveConfirmInjected, type SessionRenameDialogInjected,
+  type ArchiveSessionInjected, type ForkSessionInjected, menuOpenStateFactory, type MoveSessionInjected,
+  type PinSessionInjected, type RenameSessionInjected, type RowToastInjected, type SessionArchiveConfirmInjected,
+  type SessionMoveDialogInjected, type SessionRenameDialogInjected,
   type WorkspaceArchiveConfirmInjected, type WorkspaceViewStoreHandle,
 } from '../src/client/contract/slots.ts'
 import { WorkspaceBrowser } from '../src/client/rows/WorkspaceBrowser.tsx'
 import { ArchiveSessionMenuItem, ArchiveSessionRowButton, SessionArchiveConfirmDialog } from '../src/client/session-actions/ArchiveSession.tsx'
 import { WorkspaceArchiveConfirmDialog } from '../src/client/session-actions/ArchiveWorkspace.tsx'
 import { ForkSessionMenuItem } from '../src/client/session-actions/ForkSession.tsx'
+import { MoveSessionMenuItem, SessionMoveDialog } from '../src/client/session-actions/MoveSession.tsx'
 import { PinSessionMenuItem, PinSessionRowButton } from '../src/client/session-actions/PinSession.tsx'
 import { RenameSessionMenuItem, SessionRenameDialog } from '../src/client/session-actions/RenameSession.tsx'
 import { RowActionToast } from '../src/client/session-actions/RowActionToast.tsx'
@@ -101,6 +103,10 @@ async function bench() {
   const initializeDefault = vi.fn(async (): Promise<WorkspaceView | undefined> => undefined)
   const archiveWorkspace = vi.fn(async (_workspaceId: WorkspaceId, _options?: { stopActivity?: boolean }) => undefined)
   const unarchiveWorkspace = vi.fn(async (_workspaceId: WorkspaceId) => undefined)
+  const moveSession = vi.fn(async (_sessionId: SessionId, workspaceId?: WorkspaceId) => ({
+    workspace: workspaceId === undefined ? undefined : workspaceSnapshot.items.find(item => item.workspaceId === workspaceId),
+    previousWorkspaceId: workspaceSnapshot.items.find(item => item.sessionIds.includes(_sessionId))?.workspaceId,
+  }))
   ctx.provide('workspaces', {
     list: { getSnapshot: () => workspaceSnapshot, subscribe: workspacesSubscribe },
     create,
@@ -112,6 +118,7 @@ async function bench() {
     unarchiveSession: vi.fn(async () => undefined),
     archiveWorkspace,
     unarchiveWorkspace,
+    moveSession,
     pinSession,
     unpinSession,
     insertSessionBefore: vi.fn(async () => ({})),
@@ -141,7 +148,7 @@ async function bench() {
   return {
     ctx, slots: ctx.get('slots') as SlotRegistry, locale, create, rename,
     retain, using, selectPanel, search, renameSession, binding, fork, pickDirectory, pinSession, unpinSession,
-    workspacesSubscribe, initializeDefault, archiveWorkspace, unarchiveWorkspace,
+    workspacesSubscribe, initializeDefault, archiveWorkspace, unarchiveWorkspace, moveSession,
     setWorkspaces: (snapshot: WorkspaceSnapshot): void => { workspaceSnapshot = snapshot },
     setSessions: (snapshot: SessionListState): void => { sessionSnapshot = snapshot },
   }
@@ -225,9 +232,9 @@ describe('ui-workspace apply', () => {
     await Promise.resolve()
     expect(after.slots.entries('conversation.hero.workspace')[0]!.component).toBe(WorkspacePicker)
     // The row actions follow the browser's own declaration, whenever it lands.
-    expect(after.slots.entries(MENU_ITEM)).toHaveLength(4)
+    expect(after.slots.entries(MENU_ITEM)).toHaveLength(5)
     expect(after.slots.entries(ROW_ACTION)).toHaveLength(2)
-    expect(after.slots.entries('shell.overlay')).toHaveLength(4)
+    expect(after.slots.entries('shell.overlay')).toHaveLength(5)
   })
 
   it('declares the two Session row lists and registers the shipped actions and overlay surfaces into them', async () => {
@@ -247,6 +254,7 @@ describe('ui-workspace apply', () => {
       ['pin', 100, PinSessionMenuItem, 'workspace'],
       ['rename', 200, RenameSessionMenuItem, 'workspace'],
       ['fork', 300, ForkSessionMenuItem, 'workspace'],
+      ['move', 350, MoveSessionMenuItem, 'workspace'],
       ['archive', 400, ArchiveSessionMenuItem, 'workspace'],
     ])
     expect(rows(ROW_ACTION)).toEqual([
@@ -257,6 +265,7 @@ describe('ui-workspace apply', () => {
       ['workspace.session-rename', undefined, SessionRenameDialog, 'workspace'],
       ['workspace.session-archive', undefined, SessionArchiveConfirmDialog, 'workspace'],
       ['workspace.workspace-archive', undefined, WorkspaceArchiveConfirmDialog, 'workspace'],
+      ['workspace.session-move', undefined, SessionMoveDialog, 'workspace'],
       ['workspace.row-toast', undefined, RowActionToast, 'workspace'],
     ])
     // The browser and the row toast declare the same viewing-store handle,
@@ -291,11 +300,13 @@ describe('ui-workspace apply', () => {
     const archive = faceOf(entry(b.slots, ROW_ACTION, 'archive')) as ArchiveSessionInjected
     const archiveRow = faceOf(entry(b.slots, MENU_ITEM, 'archive')) as ArchiveSessionInjected
     const fork = faceOf(entry(b.slots, MENU_ITEM, 'fork')) as ForkSessionInjected
+    const move = faceOf(entry(b.slots, MENU_ITEM, 'move')) as MoveSessionInjected
     const pinned = pin.hooks.pinned.getSnapshot()
-    // Pin reads the effective set — the Session's own flag or its archived
-    // Workspace; the archive action reads the two sets apart, and fork reads
-    // the Workspace-archived set.
+    // Pin and move read the effective set — the Session's own flag or its
+    // archived Workspace; the archive action reads the two sets apart, and
+    // fork reads the Workspace-archived set.
     const effectiveArchived = pin.hooks.archived.getSnapshot()
+    expect(move.hooks.archived.getSnapshot()).toBe(effectiveArchived)
     const archived = archive.hooks.archived.getSnapshot()
     const workspaceArchived = archive.hooks.workspaceArchived.getSnapshot()
     expect(pinned).toEqual(new Set(['one']))
@@ -595,6 +606,83 @@ describe('ui-workspace apply', () => {
     }
   })
 
+  it('builds the move request from the Session and Workspace lists, moves with the target expanded and the moved notice, and undoes quietly', async () => {
+    const b = await bench()
+    b.setWorkspaces(workspaceState([workspace('alpha', ['one']), { ...workspace('beta', []), title: 'Beta' }]))
+    b.setSessions(sessionState([{ ...summary('one', 3), displayTitle: 'First session', cwd: '/projects/alpha/sub' }]))
+    declare(b.slots, 'sidebar.workspaces', 'shell.overlay')
+    await b.ctx.plugin({ inject: [...inject], apply }).await()
+    const move = faceOf(entry(b.slots, MENU_ITEM, 'move')) as MoveSessionInjected
+    const dialog = faceOf(entry(b.slots, 'shell.overlay', 'workspace.session-move')) as SessionMoveDialogInjected
+    const toast = faceOf(entry(b.slots, 'shell.overlay', 'workspace.row-toast')) as RowToastInjected
+    const view = viewInstance(b.slots)
+
+    // The row raises the request the dialog entry reads: display title and
+    // cwd from the Session list, the owner from the Workspace list.
+    expect(dialog.hooks.moveRequest.getSnapshot()).toBeNull()
+    const requested = vi.fn()
+    const unsubscribe = dialog.hooks.moveRequest.subscribe(requested)
+    move.requestSessionMove(sid('one'))
+    expect(dialog.hooks.moveRequest.getSnapshot()).toEqual({
+      sessionId: 'one', displayTitle: 'First session', cwd: '/projects/alpha/sub', currentWorkspaceId: 'alpha',
+    })
+    expect(requested).toHaveBeenCalled()
+    unsubscribe()
+    dialog.settleSessionMove()
+    expect(dialog.hooks.moveRequest.getSnapshot()).toBeNull()
+    // A Session the list has no row for is named by its id, with no cwd and no owner.
+    move.requestSessionMove(sid('ghost'))
+    expect(dialog.hooks.moveRequest.getSnapshot()).toEqual({
+      sessionId: 'ghost', displayTitle: 'ghost', cwd: undefined, currentWorkspaceId: undefined,
+    })
+    dialog.settleSessionMove()
+
+    // The move hop reaches the Workspace face, opens the target group, and
+    // raises the notice with the stored title and the previous owner.
+    view.actions.setGroupExpanded('beta', false)
+    await dialog.moveSession(sid('one'), 'beta' as WorkspaceId)
+    expect(b.moveSession).toHaveBeenCalledWith('one', 'beta')
+    expect(view.getSnapshot().groupExpansion['beta']).toBe(true)
+    expect(toast.hooks.toast.getSnapshot()).toEqual({
+      kind: 'sessionMoved', sessionId: 'one', targetTitle: 'Beta', previousWorkspaceId: 'alpha', seq: 1,
+    })
+    // Moving out of every Workspace opens the ungrouped account and names no target.
+    view.actions.setGroupExpanded(UNGROUPED_KEY, false)
+    await dialog.moveSession(sid('one'), undefined)
+    expect(b.moveSession).toHaveBeenLastCalledWith('one', undefined)
+    expect(view.getSnapshot().groupExpansion[UNGROUPED_KEY]).toBe(true)
+    expect(toast.hooks.toast.getSnapshot()).toEqual({
+      kind: 'sessionMoved', sessionId: 'one', targetTitle: undefined, previousWorkspaceId: 'alpha', seq: 2,
+    })
+    // A Host refusal propagates to the dialog, expands nothing, and raises no notice.
+    const refusal = new Error('workspace/archived: archived')
+    b.moveSession.mockRejectedValueOnce(refusal)
+    view.actions.setGroupExpanded('beta', false)
+    await expect(dialog.moveSession(sid('one'), 'beta' as WorkspaceId)).rejects.toBe(refusal)
+    expect(view.getSnapshot().groupExpansion['beta']).toBe(false)
+    expect(toast.hooks.toast.getSnapshot()).toMatchObject({ seq: 2 })
+
+    // Undo moves back through the same verb and raises no second notice; a rejection is a console diagnostic.
+    toast.undoMove(sid('one'), 'alpha' as WorkspaceId)
+    expect(b.moveSession).toHaveBeenLastCalledWith('one', 'alpha')
+    toast.undoMove(sid('one'), undefined)
+    expect(b.moveSession).toHaveBeenLastCalledWith('one', undefined)
+    await settled()
+    expect(toast.hooks.toast.getSnapshot()).toMatchObject({ seq: 2 })
+    const undoRejection = new Error('undo exploded')
+    b.moveSession.mockRejectedValueOnce(undoRejection)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      toast.undoMove(sid('one'), 'alpha' as WorkspaceId)
+      await vi.waitFor(() => { expect(warn).toHaveBeenCalledWith('session move undo rejected:', undoRejection) })
+    } finally {
+      warn.mockRestore()
+    }
+    // The browser face carries none of the move verbs.
+    const browser = faceOf(b.slots.entries('sidebar.workspaces')[0]!) as WorkspaceBrowserInjected
+    for (const verb of ['requestSessionMove', 'moveSession', 'undoMove']) expect(browser).not.toHaveProperty(verb)
+  })
+
   it('routes fork and rename through their shares, the rename dialog, and the browser face', async () => {
     const b = await bench()
     declare(b.slots, 'sidebar.workspaces', 'shell.overlay')
@@ -718,9 +806,9 @@ describe('ui-workspace apply', () => {
     declare(b.slots, 'sidebar.workspaces', 'conversation.hero.workspace', 'conversation.empty.workspace', 'shell.overlay')
     const fiber = b.ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
-    expect(b.slots.entries(MENU_ITEM)).toHaveLength(4)
+    expect(b.slots.entries(MENU_ITEM)).toHaveLength(5)
     expect(b.slots.entries(ROW_ACTION)).toHaveLength(2)
-    expect(b.slots.entries('shell.overlay')).toHaveLength(4)
+    expect(b.slots.entries('shell.overlay')).toHaveLength(5)
     await fiber.dispose()
     expect(b.slots.entries('sidebar.workspaces')).toHaveLength(0)
     expect(b.slots.entries('conversation.hero.workspace')).toHaveLength(0)

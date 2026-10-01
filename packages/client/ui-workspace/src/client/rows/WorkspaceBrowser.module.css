@@ -608,6 +608,76 @@
   color: var(--dsw-alias-label-secondary);
 }
 
+/* The move dialog's target list: one row per Workspace, Ungrouped last. */
+.moveOptions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 40vh;
+  margin: 0 0 8px;
+  overflow-y: auto;
+}
+
+.moveOption {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.moveOption:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.moveOption[aria-selected='true'] {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+.moveOption:disabled {
+  cursor: default;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+.moveOption > svg {
+  flex: none;
+  color: var(--dsw-alias-menu-icon);
+}
+
+.moveOptionTitle {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.moveOptionPath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.moveOptionCheck {
+  flex: none;
+  margin-left: auto;
+  color: var(--dsw-alias-state-business-primary);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .wide {
     animation: none;

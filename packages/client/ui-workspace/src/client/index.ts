@@ -7,8 +7,8 @@
  * own `single` directory-flow child hole for the composed picker package's
  * client half. WorkspaceBrowser additionally declares the two Session row
  * action lists, and this apply registers the shipped actions — pin, rename,
- * fork, archive — into them the way any client plugin would, each with its
- * own behavior, plus the rename dialog, the two stop-and-archive dialogs, and
+ * fork, move, archive — into them the way any client plugin would, each with its
+ * own behavior, plus the rename dialog, the move dialog, the two stop-and-archive dialogs, and
  * the row-action notice into `shell.overlay` (see the contract module doc). It also declares two
  * Session-row seats: the leading decoration a row renders only while its own
  * primary state is idle, and the section the row's hover card renders between
@@ -36,8 +36,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 // Type-only: pulls the Session root standard-hook merge.
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import {
-  type ArchiveSessionInjected, type ForkSessionInjected, menuOpenStateFactory, type PinSessionInjected,
-  type SessionArchiveConfirmInjected, type SessionArchiveConfirmRequest,
+  type ArchiveSessionInjected, type ForkSessionInjected, menuOpenStateFactory, type MoveSessionInjected,
+  type PinSessionInjected, type SessionArchiveConfirmInjected, type SessionArchiveConfirmRequest,
+  type SessionMoveDialogInjected, type SessionMoveRequest,
   type RenameSessionInjected, type RowToast, type RowToastInjected, type RowToastState, type SessionRenameDialogInjected,
   type WorkspaceArchiveConfirmInjected, type WorkspaceArchiveConfirmRequest,
   type WorkspaceBrowserInjected, type WorkspacePickerInjected,
@@ -45,12 +46,13 @@ import {
 import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from './shortcuts.ts'
 import { UiWorkspaceService } from './navigation.ts'
 import { createWorkspaceViewStore } from './stores.ts'
-import { effectiveArchivedSessionIds, workspaceArchivedSessionIds } from './tree.ts'
+import { effectiveArchivedSessionIds, UNGROUPED_KEY, workspaceArchivedSessionIds } from './tree.ts'
 import { WorkspaceBrowser } from './rows/WorkspaceBrowser.tsx'
 import { ArchiveSessionMenuItem, ArchiveSessionRowButton, SessionArchiveConfirmDialog } from './session-actions/ArchiveSession.tsx'
 import { WorkspaceArchiveConfirmDialog } from './session-actions/ArchiveWorkspace.tsx'
 import { derive } from './session-actions/derived.ts'
 import { ForkSessionMenuItem } from './session-actions/ForkSession.tsx'
+import { MoveSessionMenuItem, SessionMoveDialog } from './session-actions/MoveSession.tsx'
 import { PinSessionMenuItem, PinSessionRowButton } from './session-actions/PinSession.tsx'
 import { RenameSessionMenuItem, SessionRenameDialog } from './session-actions/RenameSession.tsx'
 import { RowActionToast } from './session-actions/RowActionToast.tsx'
@@ -162,7 +164,29 @@ export function apply(ctx: Context): void {
   const renameRequest = derive(shortcutControls.state, state => state.renameTarget)
   const archiveRequest = createSnapshotStore<SessionArchiveConfirmRequest | null>(null)
   const workspaceArchiveRequest = createSnapshotStore<WorkspaceArchiveConfirmRequest | null>(null)
+  const moveRequest = createSnapshotStore<SessionMoveRequest | null>(null)
   const requestSessionRename = shortcutControls.rename
+  // The dialog names the row and its cwd from the Session list, and excludes
+  // the owner the Workspace snapshot accounts the Session to right now.
+  const requestSessionMove = (sessionId: SessionId): void => {
+    const summary = sessions.list.getSnapshot().byId[sessionId]
+    const currentWorkspaceId = workspaces.list.getSnapshot().items.find(item => item.sessionIds.includes(sessionId))?.workspaceId
+    moveRequest.set({
+      sessionId, displayTitle: summary?.displayTitle ?? sessionId, cwd: summary?.cwd, currentWorkspaceId,
+    })
+  }
+  // A successful move opens the target group so the row is in view where it
+  // landed; the notice offers to move it back.
+  const moveSession: SessionMoveDialogInjected['moveSession'] = async (sessionId, workspaceId) => {
+    const result = await workspaces.moveSession(sessionId, workspaceId)
+    viewInstance.actions.setGroupExpanded(workspaceId ?? UNGROUPED_KEY, true)
+    notify({ kind: 'sessionMoved', sessionId, targetTitle: result.workspace?.title, previousWorkspaceId: result.previousWorkspaceId })
+  }
+  const undoMove = (sessionId: SessionId, previousWorkspaceId: WorkspaceId | undefined): void => {
+    workspaces.moveSession(sessionId, previousWorkspaceId).catch((reason: unknown) => {
+      console.warn('session move undo rejected:', reason)
+    })
+  }
   const unarchiveSession = (sessionId: SessionId): void => {
     uiWorkspace.unarchiveSession(sessionId).catch((reason: unknown) => {
       console.warn('session unarchive rejected:', reason)
@@ -269,11 +293,23 @@ export function apply(ctx: Context): void {
     settleSessionRename: shortcutControls.closeRename,
     renameSession,
   })
+  // Move reads the effective set: an archived row cannot be opened, so it
+  // offers no regrouping either.
+  const moveInjected = (): MoveSessionInjected => ({
+    hooks: { archived: effectiveArchivedSet },
+    requestSessionMove,
+  })
+  const moveDialogInjected = (): SessionMoveDialogInjected => ({
+    hooks: { moveRequest },
+    settleSessionMove: () => { moveRequest.set(null) },
+    moveSession,
+  })
   const rowToastInjected = (): RowToastInjected => ({
     hooks: { toast: rowToast },
     dismissToast: () => { rowToast.set(null) },
     undoArchive: unarchiveSession,
     undoWorkspaceArchive: unarchiveWorkspace,
+    undoMove,
     showArchived: () => { viewInstance.actions.setArchivedFilter('show') },
   })
   const browserInjected = (): WorkspaceBrowserInjected => ({
@@ -338,6 +374,7 @@ export function apply(ctx: Context): void {
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'pin', order: 100, locale: NS, inject: pinInjected }, PinSessionMenuItem)
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'rename', order: 200, locale: NS, inject: renameInjected }, RenameSessionMenuItem)
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'fork', order: 300, locale: NS, inject: forkInjected }, ForkSessionMenuItem)
+    yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'move', order: 350, locale: NS, inject: moveInjected }, MoveSessionMenuItem)
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'archive', order: 400, locale: NS, inject: archiveInjected }, ArchiveSessionMenuItem)
   })
   ctx.slots.inject('sidebar.workspaces.session.row.action', function* () {
@@ -356,6 +393,9 @@ export function apply(ctx: Context): void {
     yield ctx.slots.register({
       name: 'shell.overlay', id: 'workspace.workspace-archive', locale: NS, inject: workspaceArchiveConfirmInjected,
     }, WorkspaceArchiveConfirmDialog)
+    yield ctx.slots.register({
+      name: 'shell.overlay', id: 'workspace.session-move', locale: NS, inject: moveDialogInjected,
+    }, SessionMoveDialog)
     // The toast shares the browser's viewing store: it reads the archived
     // filter to drop the archived notice's filter action once rows are visible.
     yield ctx.slots.register({

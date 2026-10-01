@@ -26,7 +26,7 @@
  * row of a Session's "..." menu is an entry of
  * `sidebar.workspaces.session.menu.item`, and every hover button at the row's
  * end is an entry of `sidebar.workspaces.session.row.action`. The shipped
- * actions — pin, rename, fork, archive — are ordinary entries this package
+ * actions — pin, rename, fork, move, archive — are ordinary entries this package
  * registers from `apply`, each carrying its own behavior in its own inject
  * face and reading its own Host state through hooks that face injects, so a
  * client plugin's action lands beside them by `order` and needs nothing from
@@ -135,7 +135,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     /**
      * The rows of one Session's "..." menu, in ascending `order`. ui-workspace
      * registers the shipped rows here — `pin` (100), `rename` (200), `fork`
-     * (300), `archive` (400) — so a plugin row is placed by its own `order`
+     * (300), `move` (350), `archive` (400) — so a plugin row is placed by its own `order`
      * among them. Use a package-namespaced `id`; reusing a shipped id at
      * another `priority` shadows that row. Each entry renders one
      * `role="menuitem"` `<button>` (the shipped rows use ui-primitives'
@@ -308,6 +308,12 @@ export type RowToast =
   | { kind: 'pinFailed' }
   | { kind: 'unpinFailed' }
   | { kind: 'archivedNotOpenable' }
+  /**
+   * A Session moved into another Workspace (`targetTitle` is its stored
+   * title, localized on display) or out of every Workspace (`targetTitle`
+   * undefined); undo moves it back to `previousWorkspaceId`.
+   */
+  | { kind: 'sessionMoved'; sessionId: SessionId; targetTitle: string | undefined; previousWorkspaceId: WorkspaceId | undefined }
   /** The clicked row's Workspace is archived; restoring the Workspace, not the Session, opens it. */
   | { kind: 'workspaceArchivedNotOpenable' }
   | { kind: 'defaultWorkspaceFailed' }
@@ -444,6 +450,44 @@ export interface ForkSessionInjected {
   forkSession: (sessionId: SessionId) => void
 }
 
+/** Move action share: the row only raises the request; the dialog entry answers it. */
+export interface MoveSessionInjected {
+  hooks: {
+    /** Effectively archived Session ids — themselves or through their Workspace; the row does not offer itself on such a Session. */
+    archived: HostObservable<ReadonlySet<SessionId>>
+  }
+  /** Ask for the move dialog for one Session. */
+  requestSessionMove: (sessionId: SessionId) => void
+}
+
+/** A Session move the move action asked for; the dialog entry opens on it. */
+export interface SessionMoveRequest {
+  /** Session to move. */
+  sessionId: SessionId
+  /** The row's display title, named in the dialog. */
+  displayTitle: string
+  /** The Session's working directory, which the move leaves unchanged; undefined when the Session has none. */
+  cwd: string | undefined
+  /** The Workspace accounting the Session now, or undefined for an ungrouped Session. */
+  currentWorkspaceId: WorkspaceId | undefined
+}
+
+/** Move dialog share: the pending request, its settlement, and the move hop the dialog confirms with. */
+export interface SessionMoveDialogInjected {
+  hooks: {
+    /** The move asked for, until the dialog consumes or cancels it. */
+    moveRequest: HostObservable<SessionMoveRequest | null>
+  }
+  /** Consume or cancel the pending request. */
+  settleSessionMove: () => void
+  /**
+   * Move a Session into a Workspace, or out of every Workspace when
+   * `workspaceId` is undefined; resolves once the Host accepted, expands the
+   * target group, and raises the moved notice. Rejects with the Host's reason.
+   */
+  moveSession: (sessionId: SessionId, workspaceId: WorkspaceId | undefined) => Promise<void>
+}
+
 /** Rename action share: the row only raises the request; the dialog entry answers it. */
 export interface RenameSessionInjected {
   /** Ask for the rename dialog, seeded with the row's current title. */
@@ -482,6 +526,8 @@ export interface RowToastInjected {
   undoArchive: (sessionId: SessionId) => void
   /** Undo a Workspace archive from its notice. */
   undoWorkspaceArchive: (workspaceId: WorkspaceId) => void
+  /** Undo a Session move from its notice: back into its previous Workspace, or out of every Workspace. */
+  undoMove: (sessionId: SessionId, previousWorkspaceId: WorkspaceId | undefined) => void
   /** Switch the archived filter to "show" so the archived rows are back in view. */
   showArchived: () => void
 }
@@ -506,6 +552,13 @@ export type WorkspaceArchiveConfirmProps =
   & PropsLocale<'workspace'>
   & Omit<WorkspaceArchiveConfirmInjected, 'hooks'>
   & PropsHooks<WorkspaceArchiveConfirmInjected['hooks']>
+
+/** Props of the move dialog entry in `shell.overlay`. */
+export type SessionMoveDialogProps =
+  PropsRuntime<'shell.overlay'>
+  & PropsLocale<'workspace'>
+  & Omit<SessionMoveDialogInjected, 'hooks'>
+  & PropsHooks<SessionMoveDialogInjected['hooks']>
 
 /**
  * Props of the row toast entry in `shell.overlay`. The declared viewing store

@@ -57,6 +57,8 @@ Session 行内的 Rename 操作打开一个以该行显示标题预填的对话�
 
 归档工作区对整个分组沿用同一流程：Session 都处于静止的 Workspace 不经对话框直接归档并保留其顺序槽位；仍有 Session 在跑工作的 Workspace 会被 Host 拒绝，侧栏随即打开"停止并归档"对话框，写明该 Workspace、每个活跃 Session 的显示标题及其按族列出的工作；确认后停止这些工作并归档，取消则一切照常运行。该 Workspace 记账的每个 Session 都经由它被归档，不做逐 Session 写入，因此每行自身的置顶与归档标记保持原样；取消归档 Workspace 会把分组原位恢复且这些标记不变，而单独归档过的 Session 仍保持归档。隐藏已归档会把分组连同其 Session 一起隐藏；全部对话（显示已归档）在原槽位显示该分组，采用归档行的样式并把每个 Session 置灰；仅显示已归档则完整列出已归档分组，并列出含有单独归档 Session 的未归档分组。已归档分组没有新建会话按钮，其 Session 行只提供 Rename；无论在列表还是搜索结果中点击其中的 Session，都会说明需先取消归档工作区。该行在手动排序下仍可拖动。成功提示提供"撤销"（取消归档该 Workspace）以及与 Session 归档相同的筛选动作；not-found 或传输层失败仅记录控制台诊断，分组保持可见。[Workspace 归档决策](../../../docs/subsystems/workspace.zh.md)记录了侧栏所反映的 Host 端语义。
 
+“移动到…”只改变一个 Session 的分组，不改变它的运行方式。Session 行菜单在每个未归档（自身或经由 Workspace）的行上提供“移动到…”（order 350，位于“分叉会话”与“归档会话”之间）；它打开一个对话框，写明该 Session，并按侧栏显示顺序列出当前记账它的 Workspace 之外的每个未归档 Workspace，各带标题与文件夹路径，当 Session 有归属时“未分组”一行排在最后。尚无其他 Workspace 时对话框直接说明，并在选定目标前禁用“移动”；方向键在选项间移动，Enter 确认所选，Escape 取消。列表下方的说明写明什么不会变——Session 仍在其工作目录中运行，只有侧栏分组会动——因为这里写入的 Workspace 成员关系是显式指派，优先于文件夹匹配。确认后向 Host 发出请求，展开目标分组使该行落地处可见，并显示写明目标（或“未分组”）的通知，带一个“撤销”动作把 Session 移回先前的 Workspace 或移出所有 Workspace；Host 的拒绝——目标已归档、Workspace 或 Session 已不存在——以直白措辞留在对话框内，所选保持不变。
+
 会话更新时间使用 tertiary 文本色，包括已归档行。标题宽于所在行时，静止状态以省略号裁切。把指针停在行上，标题会滚动到远端——例如 fork 递增后的标题——并在揭示时不显示省略号；指针离开后标题回到开头。
 
 快捷键速查提供新建会话、搜索会话、添加工作区、重命名会话、分叉会话和归档会话。桌面默认使用平台的主修饰键，搜索为 Mod+K；Windows 和 macOS Web 使用[快捷键服务的平台默认值](../shortcuts/README.zh.md)；Linux Web 在用户配置前不绑定这些命令。按钮提示和会话行菜单显示当前有效绑定。点击菜单项操作该行，按快捷键操作主会话。Desktop 和 Windows/macOS Web 的重命名均使用 Mod+Alt+G，将 Mod+Shift+R 留给浏览器刷新。重命名要求主区域正在显示非空会话，且没有模态对话框遮挡；切换到其他主面板后，后台保留的会话不可作为重命名目标。其他 Windows 和 macOS Desktop 绑定也可从终端输入区域和模态对话框中执行；其他环境遵循命令的区域和模态限制。搜索和重命名的打开请求归本包管理，输入草稿保留在浏览器中。目录选择或工作区接纳尚未结束时，目录选择器拒绝重复打开。分叉捕获源会话，并使用会话行相同的 Host 操作选择最近已完成轮次，不读取更早的 Client 历史。没有会话或会话为空时不可用；没有已完成轮次的源会话由 Host 拒绝。快捷键分叉被拒绝时保留当前选择、显示本地化提示，并允许重试；非预期失败还会保留诊断日志。
@@ -99,7 +101,7 @@ Workspace 和 Session 的启动基线均就绪后，空安装环境调用 `works
 
 ### Session 行 action
 
-Session 行的 "..." 菜单和行尾悬停按钮是 WorkspaceBrowser 注册项声明的两个 `list` slot：`sidebar.workspaces.session.menu.item` 与 `sidebar.workspaces.session.row.action`。每一个菜单行、每一个悬停按钮都是条目，本包自己的 action 也不例外：`apply` 以客户端插件注册自己 action 的同一方式注册 `pin`（菜单 100、按钮 200）、`rename`（200）、`fork`（300）、`archive`（菜单 400、按钮 100），因此插件 action 落在其 `order` 所指的位置，以另一个 `priority` 复用内置 id 则遮蔽该 action。
+Session 行的 "..." 菜单和行尾悬停按钮是 WorkspaceBrowser 注册项声明的两个 `list` slot：`sidebar.workspaces.session.menu.item` 与 `sidebar.workspaces.session.row.action`。每一个菜单行、每一个悬停按钮都是条目，本包自己的 action 也不例外：`apply` 以客户端插件注册自己 action 的同一方式注册 `pin`（菜单 100、按钮 200）、`rename`（200）、`fork`（300）、`move`（350）、`archive`（菜单 400、按钮 100），因此插件 action 落在其 `order` 所指的位置，以另一个 `priority` 复用内置 id 则遮蔽该 action。
 
 条目只接收行身份（`sessionId`、`displayTitle`），其余一切自己负责：用自己注入的 hook 读自己关心的 Host 状态（置顶与归档集合，以每次 Workspace 快照只派生一次的 Set 形式），自己决定是否显示（Host 规定归档与置顶互斥，所以 pin 在归档行上不渲染），整套行为放在注册项自己的 `inject` face 里（置顶成功后顺带把会话推到保存顺序最前，归档成功后发提示），浮层也自己带——重命名对话框、两个停止并归档对话框（Session 一个、Workspace 一个）和行 action 的提示是本包注册在 `shell.overlay` 的条目，由 action 注入的请求驱动。菜单条目渲染一个 `role="menuitem"` 的按钮（本包自己的行用 ui-primitives 的 `MenuItemButton`，它带宿主样式，开启新分组的行加 `separatorBefore`，分隔线随行一起出现和消失），并通过 slot 级 `useMenuOpenState` hook（菜单自身的打开状态，从该行的渲染出现处绑定）关闭菜单；悬停按钮条目渲染一个图标按钮，按钮条会拦住点击、不让它打开该行。browser 不再向行传任何 action 回调，它剩下的动作只有搜索结果里的恢复按钮和标题双击，后者发出的是同一个重命名请求。
 

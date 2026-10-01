@@ -22,6 +22,7 @@ import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type {
   MenuOpenState, RowToast, RowToastState, SessionArchiveConfirmInjected, SessionArchiveConfirmRequest,
+  SessionMoveDialogInjected, SessionMoveRequest,
   SessionRenameDialogInjected, SessionRenameTarget, WorkspaceArchiveConfirmInjected, WorkspaceArchiveConfirmRequest,
 } from '../src/client/contract/slots.ts'
 import {
@@ -29,6 +30,7 @@ import {
 } from '../src/client/session-actions/ArchiveSession.tsx'
 import { WorkspaceArchiveConfirmDialog } from '../src/client/session-actions/ArchiveWorkspace.tsx'
 import { ForkSessionMenuItem } from '../src/client/session-actions/ForkSession.tsx'
+import { MoveSessionMenuItem, SessionMoveDialog } from '../src/client/session-actions/MoveSession.tsx'
 import { PinSessionMenuItem, PinSessionRowButton } from '../src/client/session-actions/PinSession.tsx'
 import { RenameSessionMenuItem, SessionRenameDialog } from '../src/client/session-actions/RenameSession.tsx'
 import { RowActionToast } from '../src/client/session-actions/RowActionToast.tsx'
@@ -592,9 +594,186 @@ describe('WorkspaceArchiveConfirmDialog', () => {
   })
 })
 
+describe('move action', () => {
+  it('menu row closes the menu, then asks for the move dialog', () => {
+    const { state, setMenuOpen } = openMenu()
+    const requestSessionMove = vi.fn()
+    render(<MoveSessionMenuItem {...menuRow(state)} useArchived={hook(idSet())} requestSessionMove={requestSessionMove} />)
+    fireEvent.click(screen.getByRole('menuitem', { name: '移动到…' }))
+    expect(requestSessionMove).toHaveBeenCalledWith(sid('one'))
+    expect(setMenuOpen).toHaveBeenCalledWith(false)
+    expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(requestSessionMove))
+  })
+
+  it('offers nothing on an archived Session', () => {
+    const { state } = openMenu()
+    const view = render(<MoveSessionMenuItem {...menuRow(state)} useArchived={hook(idSet('one'))} requestSessionMove={vi.fn()} />)
+    expect(view.container.childElementCount).toBe(0)
+  })
+})
+
+describe('SessionMoveDialog', () => {
+  const ws = (id: string, sessionIds: readonly string[] = []) => ({
+    workspaceId: id as WorkspaceId, path: `/projects/${id}`, title: id, sessionIds: sessionIds.map(sid),
+    assignedSessionIds: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+  })
+  /** Three Workspaces in display order: the Session's owner, another, and an archived one. */
+  const targets: WorkspaceSnapshot = {
+    ...workspaces,
+    items: [ws('alpha', ['one']), { ...ws('beta'), title: DEFAULT_WORKSPACE_DIRECTORY }, ws('shelved')],
+    archivedWorkspaceIds: ['shelved' as WorkspaceId],
+  }
+  /** The dialog over a test-owned request source; settling clears the request the way apply does. */
+  function moveDialog(
+    moveSession: SessionMoveDialogInjected['moveSession'],
+    { snapshot = targets, translate = t }: { snapshot?: WorkspaceSnapshot; translate?: typeof t } = {},
+  ) {
+    const request = createSnapshotStore<SessionMoveRequest | null>(null)
+    const settleSessionMove = vi.fn(() => { request.set(null) })
+    render(
+      <SessionMoveDialog
+        {...overlay}
+        t={translate}
+        useWorkspaces={hook(snapshot)}
+        useMoveRequest={bindSnapshotSelector(request)}
+        settleSessionMove={settleSessionMove}
+        moveSession={moveSession}
+      />,
+    )
+    const ask = (overrides: Partial<SessionMoveRequest> = {}): void => {
+      act(() => {
+        request.set({
+          sessionId: sid('one'), displayTitle: 'Session title', cwd: '/projects/alpha/sub', currentWorkspaceId: 'alpha' as WorkspaceId,
+          ...overrides,
+        })
+      })
+    }
+    return { settleSessionMove, ask }
+  }
+  const optionNames = () => screen.getAllByRole('option').map(option => option.textContent)
+
+  it('renders nothing until a move is requested', () => {
+    moveDialog(vi.fn(async () => {}))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('lists every other unarchived Workspace in display order with its path, then Ungrouped, and notes the unchanged cwd', () => {
+    const { ask } = moveDialog(vi.fn(async () => {}))
+    ask()
+    const dialog = screen.getByRole('dialog', { name: '将“Session title”移动到' })
+    expect(screen.getByRole('listbox', { name: '目标工作区' })).toBeTruthy()
+    // The owner and the archived Workspace are absent; an automatic title displays localized.
+    expect(optionNames()).toEqual([`${commonZh['workspace.defaultName']}/projects/beta`, '未分组'])
+    expect(dialog.textContent).toContain('会话仍在 /projects/alpha/sub 中运行；只改变侧栏分组。')
+    // Nothing is picked yet, so Move is disabled.
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '移动' }).disabled).toBe(true)
+    expect(screen.getAllByRole('option').every(option => option.getAttribute('aria-selected') === 'false')).toBe(true)
+  })
+
+  it('offers no Ungrouped row to an ungrouped Session, omits the cwd note without a cwd, and ArrowDown from nothing lands on the first row', () => {
+    const { ask } = moveDialog(vi.fn(async () => {}))
+    ask({ currentWorkspaceId: undefined, cwd: undefined })
+    expect(optionNames()).toEqual(['alpha/projects/alpha', `${commonZh['workspace.defaultName']}/projects/beta`])
+    expect(screen.getByRole('dialog').textContent).not.toContain('会话仍在')
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'ArrowDown' })
+    expect(screen.getByRole('option', { name: 'alpha/projects/alpha' }).getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('shows the empty state with Move disabled when an ungrouped Session has only archived Workspaces to go to', () => {
+    const { ask } = moveDialog(vi.fn(async () => {}), { snapshot: { ...targets, items: [ws('shelved')] } })
+    ask({ currentWorkspaceId: undefined })
+    expect(screen.queryByRole('listbox')).toBeNull()
+    expect(screen.getByRole('dialog').textContent).toContain('还没有其他工作区。请先添加一个工作区。')
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '移动' }).disabled).toBe(true)
+  })
+
+  it('arrow keys walk the options with wrap-around, Enter confirms the pick, and the dialog closes on acceptance', async () => {
+    const pending = Promise.withResolvers<undefined>()
+    const moveSession = vi.fn(() => pending.promise)
+    const { settleSessionMove, ask } = moveDialog(moveSession)
+    ask()
+    const listbox = screen.getByRole('listbox')
+    expect(document.activeElement).toBe(listbox)
+    // Enter with nothing picked does nothing; ArrowUp from nothing lands on the last row.
+    fireEvent.keyDown(listbox, { key: 'Enter' })
+    expect(moveSession).not.toHaveBeenCalled()
+    fireEvent.keyDown(listbox, { key: 'ArrowUp' })
+    expect(screen.getByRole('option', { name: '未分组' }).getAttribute('aria-selected')).toBe('true')
+    fireEvent.keyDown(listbox, { key: 'ArrowDown' })
+    const beta = screen.getByRole('option', { name: `${commonZh['workspace.defaultName']}/projects/beta` })
+    expect(beta.getAttribute('aria-selected')).toBe('true')
+    expect(listbox.getAttribute('aria-activedescendant')).toBe(beta.id)
+    fireEvent.keyDown(listbox, { key: 'ArrowUp' })
+    fireEvent.keyDown(listbox, { key: 'ArrowUp' })
+    expect(beta.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '移动' }).disabled).toBe(false)
+    fireEvent.keyDown(listbox, { key: 'Enter' })
+    expect(moveSession).toHaveBeenCalledWith(sid('one'), 'beta')
+    // While the Host call is pending the status shows, the options lock, and closing is blocked.
+    expect(screen.getByRole('status').textContent).toBe('正在移动…')
+    expect(screen.getByRole<HTMLButtonElement>('option', { name: '未分组' }).disabled).toBe(true)
+    fireEvent.keyDown(listbox, { key: 'Enter' })
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(settleSessionMove).not.toHaveBeenCalled()
+    expect(moveSession).toHaveBeenCalledOnce()
+    await act(async () => { pending.resolve(undefined) })
+    expect(settleSessionMove).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('clicking Ungrouped and confirming moves out of every Workspace', async () => {
+    const moveSession = vi.fn(async () => {})
+    const { settleSessionMove, ask } = moveDialog(moveSession)
+    ask()
+    fireEvent.click(screen.getByRole('option', { name: '未分组' }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '移动' })) })
+    expect(moveSession).toHaveBeenCalledWith(sid('one'), undefined)
+    expect(settleSessionMove).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the dialog open with a rejection surfaced in place, clears it on another pick, and reports a non-Error reason as text', async () => {
+    const moveSession = vi.fn<SessionMoveDialogInjected['moveSession']>()
+      .mockRejectedValueOnce(new Error('workspace/archived: archived'))
+      .mockRejectedValueOnce('plain failure')
+    const { settleSessionMove, ask } = moveDialog(moveSession)
+    ask()
+    fireEvent.click(screen.getByRole('option', { name: '未分组' }))
+    fireEvent.click(screen.getByRole('button', { name: '移动' }))
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('workspace/archived: archived') })
+    expect(screen.getByRole('dialog', { name: '将“Session title”移动到' })).toBeTruthy()
+    expect(settleSessionMove).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('option', { name: `${commonZh['workspace.defaultName']}/projects/beta` }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '移动' }))
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('plain failure') })
+    expect(moveSession).toHaveBeenLastCalledWith(sid('one'), 'beta')
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(settleSessionMove).toHaveBeenCalledOnce()
+  })
+
+  it('Escape and Close settle without moving; a request for another Session starts with no pick', () => {
+    const moveSession = vi.fn(async () => {})
+    const { settleSessionMove, ask } = moveDialog(moveSession, { translate: tEn })
+    ask()
+    fireEvent.click(screen.getByRole('option', { name: 'Ungrouped' }))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(settleSessionMove).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    ask()
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Move' }).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(settleSessionMove).toHaveBeenCalledTimes(2)
+    ask({ sessionId: sid('two'), displayTitle: 'Other' })
+    expect(screen.getByRole('dialog', { name: 'Move “Other” to' })).toBeTruthy()
+    expect(screen.getByRole('dialog').textContent).toContain('The session keeps running in /projects/alpha/sub; only the sidebar grouping changes.')
+    expect(moveSession).not.toHaveBeenCalled()
+  })
+})
+
 describe('RowActionToast', () => {
   /** The notice surface over a test-owned notice source; dismissal clears the notice the way apply does. */
-  function toastSurface(viewState: { archivedFilter?: 'default' | 'show' | 'only' } = { archivedFilter: 'default' }) {
+  function toastSurface(viewState: { archivedFilter?: 'default' | 'show' | 'only' } = { archivedFilter: 'default' }, translate = t) {
     const toast = createSnapshotStore<RowToastState | null>(null)
     const instance = createWorkspaceViewStore().create()
     // A v5 snapshot hydrates without the filter key; mirror it by dropping the
@@ -606,16 +785,19 @@ describe('RowActionToast', () => {
     const dismissToast = vi.fn(() => { toast.set(null) })
     const undoArchive = vi.fn()
     const undoWorkspaceArchive = vi.fn()
+    const undoMove = vi.fn()
     const showArchived = vi.fn()
     render(
       <RowActionToast
         {...overlay}
+        t={translate}
         useToast={bindSnapshotSelector(toast)}
         useStore={bindSnapshotSelector(view)}
         actions={instance.actions}
         dismissToast={dismissToast}
         undoArchive={undoArchive}
         undoWorkspaceArchive={undoWorkspaceArchive}
+        undoMove={undoMove}
         showArchived={showArchived}
       />,
     )
@@ -623,7 +805,7 @@ describe('RowActionToast', () => {
     const notify = (notice: RowToast): void => {
       act(() => { toast.set({ ...notice, seq: ++seq }) })
     }
-    return { dismissToast, undoArchive, undoWorkspaceArchive, showArchived, notify }
+    return { dismissToast, undoArchive, undoWorkspaceArchive, undoMove, showArchived, notify }
   }
 
   it('renders nothing without a notice', () => {
@@ -684,6 +866,51 @@ describe('RowActionToast', () => {
     fireEvent.click(screen.getByRole('button', { name: '筛选已归档会话' }))
     expect(showArchived).toHaveBeenCalledOnce()
     expect(undoWorkspaceArchive).toHaveBeenCalledOnce()
+  })
+
+  it('the moved notice names the target Workspace and undoes back to the previous owner, with no filter action', () => {
+    const { dismissToast, undoMove, undoArchive, showArchived, notify } = toastSurface()
+    notify({ kind: 'sessionMoved', sessionId: sid('one'), targetTitle: 'beta', previousWorkspaceId: 'alpha' as WorkspaceId })
+    expect(screen.getByRole('alert').textContent).toBe('会话已移动到“beta”，可撤销')
+    expect(screen.queryByRole('button', { name: '筛选已归档会话' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '撤销' }))
+    expect(dismissToast).toHaveBeenCalledOnce()
+    expect(undoMove).toHaveBeenCalledWith(sid('one'), 'alpha')
+    expect(callOrder(dismissToast)).toBeLessThan(callOrder(undoMove))
+    expect(undoArchive).not.toHaveBeenCalled()
+    expect(showArchived).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('the moved-to-Ungrouped notice has its own wording and undoes back into the Workspace', () => {
+    const { undoMove, notify } = toastSurface()
+    notify({ kind: 'sessionMoved', sessionId: sid('one'), targetTitle: undefined, previousWorkspaceId: 'alpha' as WorkspaceId })
+    expect(screen.getByRole('alert').textContent).toBe('会话已移至“未分组”，可撤销')
+    fireEvent.click(screen.getByRole('button', { name: '撤销' }))
+    expect(undoMove).toHaveBeenCalledWith(sid('one'), 'alpha')
+  })
+
+  it('the moved notice localizes an automatic target title and undoes an ungrouped origin with no Workspace', () => {
+    const { undoMove, notify } = toastSurface({ archivedFilter: 'default' }, tEn)
+    notify({ kind: 'sessionMoved', sessionId: sid('one'), targetTitle: DEFAULT_WORKSPACE_DIRECTORY, previousWorkspaceId: undefined })
+    expect(screen.getByRole('alert').textContent).toBe(`Session moved to “${commonEn['workspace.defaultName']}”. You can undo`)
+    fireEvent.click(screen.getByRole('button', { name: 'undo' }))
+    expect(undoMove).toHaveBeenCalledWith(sid('one'), undefined)
+  })
+
+  it('the moved notice holds as long as the archived notice', () => {
+    vi.useFakeTimers()
+    try {
+      const { dismissToast, notify } = toastSurface()
+      notify({ kind: 'sessionMoved', sessionId: sid('one'), targetTitle: 'beta', previousWorkspaceId: undefined })
+      act(() => { vi.advanceTimersByTime(4000) })
+      expect(dismissToast).not.toHaveBeenCalled()
+      act(() => { vi.advanceTimersByTime(3000) })
+      expect(dismissToast).toHaveBeenCalledOnce()
+      expect(screen.queryByRole('alert')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it.each(['show', 'only'] as const)('omits the filter action while the %s filter already shows archived rows', (archivedFilter) => {
