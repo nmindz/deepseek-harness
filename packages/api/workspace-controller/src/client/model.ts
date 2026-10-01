@@ -14,6 +14,8 @@ import type {
   WorkspaceCreateValue,
   WorkspaceDeleteValue,
   WorkspaceInsertSessionBeforeRequest,
+  WorkspaceMoveSessionRequest,
+  WorkspaceMoveSessionValue,
   WorkspaceOrderValue,
   WorkspacePinSessionRequest,
   WorkspacePinValue,
@@ -190,6 +192,26 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
       ...beforeSessionId === undefined ? {} : { beforeSessionId },
     })
     if (result.ok) this.upsert(result.value.workspace)
+    return result
+  }
+
+  /**
+   * Move a Session into another Workspace, or to Ungrouped, and merge the
+   * returned destination row. The previous owner's row arrives through the
+   * follow stream's `upsert` increment.
+   * @param sessionId - Session to move.
+   * @param workspaceId - destination Workspace; omitted leaves the Session Ungrouped.
+   * @returns generated Remote result.
+   */
+  async moveSession(
+    sessionId: WorkspaceMoveSessionRequest['sessionId'],
+    workspaceId?: WorkspaceMoveSessionRequest['workspaceId'],
+  ): Promise<RemoteResult<WorkspaceMoveSessionValue>> {
+    const result = await this.remote.moveSession({
+      sessionId,
+      ...workspaceId === undefined ? {} : { workspaceId },
+    })
+    if (result.ok && result.value.workspace !== undefined) this.upsert(result.value.workspace)
     return result
   }
 

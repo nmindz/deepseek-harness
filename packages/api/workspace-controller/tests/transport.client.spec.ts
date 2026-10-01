@@ -17,6 +17,7 @@ import {
   WorkspaceController,
   WorkspaceCreateError,
   type WorkspaceFollowSink,
+  WorkspaceMoveError,
 } from '../src/client/index.ts'
 import type { WorkspaceFollowFrame, WorkspaceId } from '../src/types.ts'
 import { FOLLOW, baseline, err, followGenerations, workspace, workspaceWorld } from './remote/workspace.client.ts'
@@ -353,6 +354,11 @@ describe('WorkspaceController', () => {
     expect(model.getSnapshot().archivedWorkspaceIds).toEqual(['one'])
     await expect(controller.unarchiveWorkspace(wid('one'))).resolves.toBeUndefined()
     expect(model.getSnapshot().archivedWorkspaceIds).toEqual([])
+    await expect(controller.moveSession(sid('session'), wid('one'))).resolves.toMatchObject({
+      workspace: { workspaceId: 'one', sessionIds: ['session'], assignedSessionIds: ['session'] },
+    })
+    expect(model.getSnapshot().items.find(item => item.workspaceId === wid('one'))?.assignedSessionIds).toEqual(['session'])
+    await expect(controller.moveSession(sid('session'))).resolves.toEqual({})
     await expect(controller.delete(wid('one'))).resolves.toBeUndefined()
     // Each command crosses the wire as one positional request object.
     expect(mock.log.requests('workspace/create')).toEqual([{ path: '/work/created' }])
@@ -367,6 +373,7 @@ describe('WorkspaceController', () => {
     await expect(controller.archiveWorkspace(wid('one'), { stopActivity: true })).resolves.toBeUndefined()
     expect(mock.log.requests('workspace/archiveWorkspace')).toEqual([{ workspaceId: 'one' }, { workspaceId: 'one', stopActivity: true }])
     expect(mock.log.requests('workspace/unarchiveWorkspace')).toEqual([{ workspaceId: 'one' }])
+    expect(mock.log.requests('workspace/moveSession')).toEqual([{ sessionId: 'session', workspaceId: 'one' }, { sessionId: 'session' }])
     expect(mock.log.requests('workspace/delete')).toEqual([{ workspaceId: 'one' }])
   })
 
@@ -428,6 +435,15 @@ describe('WorkspaceController', () => {
     mock.remote.workspace.unarchiveWorkspace.mockResolvedValueOnce(err(missingWorkspace))
     await expect(controller.unarchiveWorkspace(wid('missing')))
       .rejects.toThrow('workspace unarchive failed: workspace/not-found: gone')
+    // An archived destination is the move refusal a surface branches on.
+    const archivedDestination = new RemoteError('workspace/archived', 'destination is archived', { workspaceId: wid('one') })
+    mock.remote.workspace.moveSession.mockResolvedValueOnce(err(archivedDestination))
+    const moveIntoArchived = controller.moveSession(sid('session'), wid('one'))
+    await expect(moveIntoArchived).rejects.toBeInstanceOf(WorkspaceMoveError)
+    await expect(moveIntoArchived).rejects.toMatchObject({
+      name: 'WorkspaceMoveError',
+      rpcError: { code: 'workspace/archived', details: { workspaceId: 'one' } },
+    })
     mock.remote.workspace.pinSession.mockResolvedValueOnce(err(missingSession))
     await expect(controller.pinSession(sid('session')))
       .rejects.toThrow('workspace session pin failed: session/not-found: missing session')

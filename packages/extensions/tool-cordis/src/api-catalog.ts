@@ -3630,6 +3630,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the updated Workspace projection.',
       },
       {
+        signature: '@Remote(\'moveSession\') moveSession(request: WorkspaceMoveSessionRequest): Promise<WorkspaceMoveSessionValue>',
+        description: 'Move one known Session into another Workspace as an explicit assignment, or out of every Workspace. The Session keeps running in its own directory; only its grouping changes. Fails as `workspace/not-found`, `workspace/archived`, or `session/not-found` before any write.',
+        parameters: [{ name: 'request', description: 'Session identity and optional destination Workspace.' }],
+        returns: 'the destination\'s complete row when there is one, and the previous owner when there was one.',
+      },
+      {
         signature: '@Remote(\'archiveSession\') archiveSession(request: WorkspaceArchiveSessionRequest): Promise<WorkspaceArchiveValue>',
         description: 'Hide one known Session from Workspace grouping surfaces.',
         parameters: [{ name: 'request', description: 'Session identity to archive.' }],
@@ -8427,6 +8433,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface WorkspaceInsertSessionBeforeRequest {\n    readonly workspaceId: WorkspaceId;\n    readonly sessionId: SessionId;\n    readonly beforeSessionId?: SessionId;\n}',
   },
   {
+    name: 'WorkspaceMoveSessionRequest',
+    declaration: 'export interface WorkspaceMoveSessionRequest {\n    readonly sessionId: SessionId;\n    readonly workspaceId?: WorkspaceId;\n}',
+  },
+  {
+    name: 'WorkspaceMoveSessionValue',
+    declaration: 'export interface WorkspaceMoveSessionValue {\n    readonly workspace?: WorkspaceView;\n    readonly previousWorkspaceId?: WorkspaceId;\n}',
+  },
+  {
     name: 'WorkspaceOrderValue',
     declaration: 'export interface WorkspaceOrderValue {\n    readonly workspaceIds: readonly WorkspaceId[];\n}',
   },
@@ -8460,7 +8474,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'WorkspaceView',
-    declaration: 'export interface WorkspaceView {\n    readonly workspaceId: WorkspaceId;\n    readonly path: string;\n    readonly title: string;\n    readonly sessionIds: readonly SessionId[];\n    readonly createdAt: string;\n    readonly updatedAt: string;\n}',
+    declaration: 'export interface WorkspaceView {\n    readonly workspaceId: WorkspaceId;\n    readonly path: string;\n    readonly title: string;\n    readonly sessionIds: readonly SessionId[];\n    readonly assignedSessionIds: readonly SessionId[];\n    readonly createdAt: string;\n    readonly updatedAt: string;\n}',
   },
 ]
 

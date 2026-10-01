@@ -180,6 +180,8 @@ interface SessionActivity {
 
 A whole Workspace archives the same way through a second registry-global durable set, `archivedWorkspaceIds`. `archiveWorkspace(workspaceId)` asks the waterfall once per accounted Session that is not already in `archivedSessionIds` and rejects any reported activity with `WorkspaceActiveError` (`workspaceId`, `sessions`: each active Session with its `activity`) without writing; the controller maps it to `workspace/workspace-active` with the same details, and an unknown id maps to `workspace/not-found`. With `stopActivity: true` (`ArchiveWorkspaceOptions`, exposed by `WorkspaceArchiveWorkspaceRequest`) the set is written first and `workspace/session-stop` is dispatched for every Session that reported activity. Nothing else is written: the record, its order slot, its Session account, and each Session's own pin and archive flags stay as they are, so `unarchiveWorkspace(workspaceId)` restores the group in place and a Session archived on its own before stays archived. While the Workspace is archived, `isSessionEffectivelyArchived(sessionId)` reports its accounted Sessions as archived; the Session Controller's `agent/pre-step` gate reads that derived answer, and `session.create` with that `workspaceId` or `session.fork` of one of its Sessions is refused as `workspace/archived`. The follow stream carries the set in its baseline and as the `archivedWorkspaces` increment; both verbs return `WorkspaceArchivedWorkspacesValue`, the complete set.
 
+Membership can also be decided by the user. A record's `assignedSessionIds` names the accounted Sessions moved in explicitly; an assigned id is a member regardless of its header cwd, while every other member still needs the canonical-cwd match, and the set is always a subset of `sessionIds` (startup validation rejects a stray or repeated assignment). `moveSession(sessionId, workspaceId?)` runs on the registry's serialized chain: an unknown destination (`WorkspaceUnknownWorkspaceError`), an archived destination (`WorkspaceArchivedError`), and an unknown Session (`WorkspaceUnknownSessionError`) are refused before any write; the current holder is found through the record-level account so a cwd-filtered candidate is released too; the detach is written first, then `attachSession(sessionId, { assigned: true })` on the destination, so an interrupted move leaves the Session Ungrouped and never double-owned. The result is `{ previousWorkspaceId }`. The controller's `workspace.moveSession` maps the three refusals to `workspace/not-found`, `workspace/archived`, and `session/not-found`, returns `WorkspaceMoveSessionValue` (the destination row when there is one, plus `previousWorkspaceId`), and relies on the `upsert` increment for the previous holder's row; `WorkspaceView.assignedSessionIds` projects the assigned set. A fork of an assigned member attaches to the same Workspace as assigned. The decision record is the [assigned-membership Agent Note](../../.agents/notes/implemented/feature/2026-09-30-assigned-session-membership-overrides-cwd.md).
+
 ## Consumers
 
 [`dsh-workspace-controller`](../../packages/api/workspace-controller) serves workspace CRUD to GUI clients over `ctx.workspaceRegistry`, and [`dsh-session-controller`](../../packages/api/session-controller) performs the create-session-then-attach flow above. [dsh-agent-instructions](../../packages/context/agent-instructions) is **not** a consumer despite the name: it discovers AGENTS.md-style instruction files under an agent's own cwd and never touches `ctx.workspaceRegistry` — the shared word refers to the user's working directory, not to this registry's entities.
@@ -393,6 +395,16 @@ Host service backing the generated `ctx.remote.workspace` namespace.
  * @returns the updated Workspace projection.
  */
 @Remote('insertSessionBefore') insertSessionBefore(request: WorkspaceInsertSessionBeforeRequest): Promise<WorkspaceValue>
+
+/**
+ * Move one known Session into another Workspace as an explicit assignment,
+ * or out of every Workspace. The Session keeps running in its own
+ * directory; only its grouping changes. Fails as `workspace/not-found`,
+ * `workspace/archived`, or `session/not-found` before any write.
+ * @param request - Session identity and optional destination Workspace.
+ * @returns the destination's complete row when there is one, and the previous owner when there was one.
+ */
+@Remote('moveSession') moveSession(request: WorkspaceMoveSessionRequest): Promise<WorkspaceMoveSessionValue>
 
 /**
  * Hide one known Session from Workspace grouping surfaces.

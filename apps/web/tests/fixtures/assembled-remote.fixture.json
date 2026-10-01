@@ -239,6 +239,7 @@
             "fx-beta",
             "fx-gamma"
           ],
+          "assignedSessionIds": [],
           "createdAt": "2026-09-13T03:02:55.884Z",
           "updatedAt": "2026-09-13T03:02:55.884Z"
         },
@@ -247,6 +248,7 @@
           "path": "/home/fixture/Documents/project",
           "title": "project",
           "sessionIds": [],
+          "assignedSessionIds": [],
           "createdAt": "2026-09-13T03:02:55.884Z",
           "updatedAt": "2026-09-13T03:02:55.884Z"
         }

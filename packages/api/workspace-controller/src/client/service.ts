@@ -4,7 +4,7 @@ import { Service, type Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { RemoteFailure } from '@deepseek-ai/dsh-typert-protocol'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
-import type { WorkspaceView } from '../types.ts'
+import type { WorkspaceMoveSessionValue, WorkspaceView } from '../types.ts'
 import type { ClientWorkspaceModel, WorkspaceSnapshot } from './model.ts'
 
 /** Structured create failure for callers that distinguish Host business errors. */
@@ -33,6 +33,20 @@ export class WorkspaceArchiveError extends Error {
    */
   constructor(subject: 'session' | 'workspace', readonly rpcError: RemoteFailure) {
     super(`workspace ${subject} archive failed: ${rpcError.code}: ${rpcError.message}`)
+  }
+}
+
+/**
+ * A Session move failed on the Host. `rpcError.code` distinguishes an
+ * archived destination (`workspace/archived`) from a missing Workspace or
+ * Session (`workspace/not-found`, `session/not-found`) or a carrier fault.
+ */
+export class WorkspaceMoveError extends Error {
+  override readonly name = 'WorkspaceMoveError'
+
+  /** @param rpcError - Host business or folded carrier failure. */
+  constructor(readonly rpcError: RemoteFailure) {
+    super(`workspace session move failed: ${rpcError.code}: ${rpcError.message}`)
   }
 }
 
@@ -131,6 +145,15 @@ export interface IWorkspaces {
     sessionId: SessionId,
     beforeSessionId?: SessionId,
   ): Promise<WorkspaceView>
+  /**
+   * Move a Session into another Workspace as an explicit assignment, or out
+   * of every Workspace; the Session keeps its own directory.
+   * @param sessionId - Session to move.
+   * @param workspaceId - destination Workspace; omitted leaves the Session Ungrouped.
+   * @returns the destination's row when there is one, and the previous owner when there was one.
+   * @throws {WorkspaceMoveError} when the Host refuses; an archived destination fails as `workspace/archived`.
+   */
+  moveSession(sessionId: SessionId, workspaceId?: WorkspaceId): Promise<WorkspaceMoveSessionValue>
 }
 
 /** Owns the bare Workspace snapshot and Workspace-only commands. */
@@ -212,6 +235,12 @@ export class WorkspaceController extends Service implements IWorkspaces {
     const result = await this.model.insertSessionBefore(workspaceId, sessionId, beforeSessionId)
     if (!result.ok) throw commandError('move', result.error)
     return result.value.workspace
+  }
+
+  async moveSession(sessionId: SessionId, workspaceId?: WorkspaceId): Promise<WorkspaceMoveSessionValue> {
+    const result = await this.model.moveSession(sessionId, workspaceId)
+    if (!result.ok) throw new WorkspaceMoveError(result.error)
+    return result.value
   }
 }
 

@@ -306,6 +306,61 @@ describe('WorkspaceController commands', () => {
       .resolves.toEqual({ pinnedSessionIds: [] })
   })
 
+  it('moves a Session between Workspaces and to Ungrouped, naming the destination row and the previous owner', async () => {
+    const { controller, ctx, root } = await harness()
+    const source = await controller.create({ path: stageDir(root, 'source') })
+    const target = await controller.create({ path: stageDir(root, 'target') })
+    const session = ctx.sessions.create(SessionId('mover'), { meta: { cwd: source.workspace.path } })
+    const sourceEntity = ctx.workspaceRegistry.get(source.workspace.workspaceId)
+    if (sourceEntity === undefined) throw new Error('fixture Workspace disappeared')
+    await sourceEntity.attachSession(session.id)
+
+    // Into another Workspace: the destination row lists the Session first and
+    // as assigned; the previous owner is named and no longer accounts it.
+    const movedIn = await controller.moveSession({ sessionId: session.id, workspaceId: target.workspace.workspaceId })
+    expect(movedIn.previousWorkspaceId).toBe(source.workspace.workspaceId)
+    expect(movedIn.workspace).toMatchObject({
+      workspaceId: target.workspace.workspaceId,
+      sessionIds: [session.id],
+      assignedSessionIds: [session.id],
+    })
+    expect([...sourceEntity.sessionIds]).toEqual([])
+
+    // To Ungrouped: no destination row; the previous owner is the target of the first move.
+    await expect(controller.moveSession({ sessionId: session.id }))
+      .resolves.toEqual({ previousWorkspaceId: target.workspace.workspaceId })
+    expect(ctx.workspaceRegistry.owningWorkspaceOf(session.id)).toBeUndefined()
+
+    // From Ungrouped into a Workspace: no previous owner key at all.
+    const movedBack = await controller.moveSession({ sessionId: session.id, workspaceId: source.workspace.workspaceId })
+    expect(Object.keys(movedBack)).toEqual(['workspace'])
+    expect(movedBack.workspace).toMatchObject({ workspaceId: source.workspace.workspaceId, assignedSessionIds: [session.id] })
+  })
+
+  it('refuses a move to an unknown or archived Workspace and of an unknown Session before writing', async () => {
+    const { controller, ctx, root } = await harness()
+    const home = await controller.create({ path: stageDir(root, 'home') })
+    const shelved = await controller.create({ path: stageDir(root, 'shelved') })
+    const session = ctx.sessions.create(SessionId('stays'), { meta: { cwd: home.workspace.path } })
+    const homeEntity = ctx.workspaceRegistry.get(home.workspace.workspaceId)
+    if (homeEntity === undefined) throw new Error('fixture Workspace disappeared')
+    await homeEntity.attachSession(session.id)
+    await controller.archiveWorkspace({ workspaceId: shelved.workspace.workspaceId })
+
+    await expect(controller.moveSession({ sessionId: session.id, workspaceId: 'missing' as WorkspaceId }))
+      .rejects.toMatchObject({ code: 'workspace/not-found', details: { workspaceId: 'missing' } })
+    await expect(controller.moveSession({ sessionId: session.id, workspaceId: shelved.workspace.workspaceId }))
+      .rejects.toMatchObject({ code: 'workspace/archived', details: { workspaceId: shelved.workspace.workspaceId } })
+    await expect(controller.moveSession({ sessionId: SessionId('unknown'), workspaceId: home.workspace.workspaceId }))
+      .rejects.toMatchObject({ code: 'session/not-found', details: { sessionId: 'unknown' } })
+    expect([...homeEntity.sessionIds]).toEqual([session.id])
+
+    // Any other registry failure propagates as itself.
+    const failure = new Error('registry exploded')
+    vi.spyOn(ctx.workspaceRegistry, 'moveSession').mockRejectedValueOnce(failure)
+    await expect(controller.moveSession({ sessionId: session.id })).rejects.toBe(failure)
+  })
+
   it('archives only known Workspaces, refuses active Sessions with their work, and unarchives idempotently', async () => {
     const { controller, ctx, root } = await harness()
     const created = await controller.create({ path: stageDir(root, 'archivable') })
@@ -477,6 +532,26 @@ describe('WorkspaceController follow', () => {
     await expect(nextFrame(iterator)).resolves.toEqual({
       type: 'archivedWorkspaces', archivedWorkspaceIds: [],
     })
+    // A move publishes the owner's detach and the target's assigned attach as
+    // two upsert frames, in write order; the baseline projection carries the
+    // assignment in the same field.
+    const firstEntity = ctx.workspaceRegistry.get(first.workspace.workspaceId)
+    if (firstEntity === undefined) throw new Error('fixture Workspace disappeared')
+    await firstEntity.attachSession(session.id)
+    await expect(nextFrame(iterator)).resolves.toMatchObject({
+      type: 'upsert', workspace: { workspaceId: first.workspace.workspaceId, sessionIds: [session.id], assignedSessionIds: [] },
+    })
+    await controller.moveSession({ sessionId: session.id, workspaceId: second.workspace.workspaceId })
+    await expect(nextFrame(iterator)).resolves.toMatchObject({
+      type: 'upsert', workspace: { workspaceId: first.workspace.workspaceId, sessionIds: [], assignedSessionIds: [] },
+    })
+    await expect(nextFrame(iterator)).resolves.toMatchObject({
+      type: 'upsert',
+      workspace: { workspaceId: second.workspace.workspaceId, sessionIds: [session.id], assignedSessionIds: [session.id] },
+    })
+    expect(new WorkspaceFeed(ctx).baseline().items.map(item => item.assignedSessionIds))
+      .toEqual([[], [session.id]])
+
     await controller.delete({ workspaceId: second.workspace.workspaceId })
     await expect(nextFrame(iterator)).resolves.toEqual({
       type: 'order', workspaceIds: [first.workspace.workspaceId],

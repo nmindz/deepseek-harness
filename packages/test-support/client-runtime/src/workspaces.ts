@@ -1,7 +1,7 @@
 /** Test-owned workspaces face: the renderer standard-kit observable plus recorded actions. */
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type {
-  IWorkspaces, WorkspaceId, WorkspaceSnapshot, WorkspaceView,
+  IWorkspaces, WorkspaceId, WorkspaceMoveSessionValue, WorkspaceSnapshot, WorkspaceView,
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -135,6 +135,37 @@ export class TestWorkspaces implements IWorkspaces {
     const stub = this.stubs.get('insertSessionBefore')
     if (stub !== undefined) return await (stub(workspaceId, sessionId, beforeSessionId) as Promise<WorkspaceView>)
     return { workspaceId, title: '', path: '', sessionIds: [sessionId] } as unknown as WorkspaceView
+  }
+
+  /**
+   * Move a session between Workspaces (recorded). The default mirrors the
+   * production face's observable effect on the list state: the id leaves
+   * every row's account and assignment, then leads the target's; the result
+   * names the target row and the previous owner when there is one.
+   * @param sessionId - session to move.
+   * @param workspaceId - destination; omitted leaves the session Ungrouped.
+   * @returns the destination row and previous owner.
+   */
+  async moveSession(sessionId: SessionId, workspaceId?: WorkspaceId): Promise<WorkspaceMoveSessionValue> {
+    this.calls.push({ method: 'moveSession', args: [sessionId, workspaceId] })
+    const stub = this.stubs.get('moveSession')
+    if (stub !== undefined) return await (stub(sessionId, workspaceId) as Promise<WorkspaceMoveSessionValue>)
+    const previousWorkspaceId = this.list.getSnapshot().items
+      .find(item => item.sessionIds.includes(sessionId))?.workspaceId
+    await this.update((draft) => {
+      draft.items = draft.items.map((item) => {
+        const sessionIds = item.sessionIds.filter(id => id !== sessionId)
+        const assignedSessionIds = item.assignedSessionIds.filter(id => id !== sessionId)
+        return item.workspaceId === workspaceId
+          ? { ...item, sessionIds: [sessionId, ...sessionIds], assignedSessionIds: [sessionId, ...assignedSessionIds] }
+          : { ...item, sessionIds, assignedSessionIds }
+      })
+    })
+    const workspace = this.list.getSnapshot().items.find(item => item.workspaceId === workspaceId)
+    return {
+      ...workspace === undefined ? {} : { workspace },
+      ...previousWorkspaceId === undefined ? {} : { previousWorkspaceId },
+    }
   }
 
   /**
