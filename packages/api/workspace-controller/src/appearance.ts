@@ -1,8 +1,6 @@
 /**
- * Host-face appearance vocabulary: the palette, the curated glyph ids, and
- * the icon grammar check, served from the Workspace domain that owns them so
- * Host validation and the durable schema agree by construction. The Client
- * face carries a byte-identical copy in `client/appearance.ts`.
+ * Host-face appearance vocabulary: the browser-safe copy both faces serve,
+ * identical to the Workspace domain's own by test.
  */
 
-export { WORKSPACE_COLORS, WORKSPACE_ICON_IDS, isWorkspaceIconRef, workspaceIconRef } from '@deepseek-ai/dsh-workspace'
+export { WORKSPACE_COLORS, WORKSPACE_ICON_IDS, isWorkspaceIconRef, workspaceIconRef } from './appearance-vocabulary.ts'

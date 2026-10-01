@@ -15,12 +15,17 @@ import { WorkspaceFeed } from '../src/feed.ts'
 import type { WorkspaceFollowFrame } from '../src/types.ts'
 import { MemoryStorageBackend } from '../../../storage/storage-domain/tests/helpers/memory-backend.ts'
 
-describe('appearance vocabulary re-export', () => {
-  it('serves the domain values unchanged from the Host face', () => {
-    expect(hostFace.WORKSPACE_COLORS).toBe(WORKSPACE_COLORS)
-    expect(hostFace.WORKSPACE_ICON_IDS).toBe(WORKSPACE_ICON_IDS)
-    expect(hostFace.isWorkspaceIconRef).toBe(isWorkspaceIconRef)
-    expect(hostFace.workspaceIconRef).toBe(workspaceIconRef)
+describe('appearance vocabulary', () => {
+  it('agrees with the Workspace domain on the palette, the glyph ids, and the grammar', () => {
+    // The Host face serves the browser-safe copy both faces share, so the
+    // values are equal to the domain's, not the domain's own objects.
+    expect(hostFace.WORKSPACE_COLORS).toEqual(WORKSPACE_COLORS)
+    expect(hostFace.WORKSPACE_ICON_IDS).toEqual(WORKSPACE_ICON_IDS)
+    for (const value of ['icon:code', 'icon:nope', 'emoji:🎯', 'emoji:🎯🎯', '']) {
+      expect(hostFace.isWorkspaceIconRef(value)).toBe(isWorkspaceIconRef(value))
+    }
+    expect(hostFace.workspaceIconRef('emoji:🎯')).toBe(workspaceIconRef('emoji:🎯'))
+    expect(() => hostFace.workspaceIconRef('icon:nope')).toThrow(TypeError)
   })
 })
 

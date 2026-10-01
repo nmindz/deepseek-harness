@@ -1,8 +1,10 @@
 /**
- * Browser copy of the Workspace appearance vocabulary. The Client bundle may
- * not import a value from the Workspace domain package, so the palette, the
- * curated glyph ids, and the icon grammar check are restated here against
- * the domain's types; `appearance.client.spec.ts` holds the copy to the domain grammar.
+ * Browser-safe Workspace appearance vocabulary: the palette, the curated
+ * glyph ids, and the icon grammar check. Restated here against the domain's
+ * types because a browser bundle may not import a value from the Workspace
+ * domain package; `appearance.client.spec.ts` holds this copy to the domain
+ * grammar. Served to both faces and as the `./appearance` subpath so a
+ * client plugin can inline it.
  */
 
 import type { WorkspaceColor, WorkspaceIconId, WorkspaceIconRef } from '@deepseek-ai/dsh-workspace/types'
