@@ -60,6 +60,13 @@ interface SessionReadState {
   readonly events: readonly SessionEvent[]
 }
 
+/** The workspace a fork joins and the lineage session that workspace accounts. */
+interface ForkLineage {
+  readonly workspace: Workspace
+  /** The fork source, or the nearest accounted ancestor of a subagent source. */
+  readonly memberId: SessionId
+}
+
 type PromptContentCandidate =
   | SessionPromptRequest['content'][number]
   | Extract<SessionUpdateQueueRequest['action'], { readonly kind: 'edit' }>['content'][number]
@@ -254,9 +261,9 @@ export class SessionCommandController {
       )
     }
     const seed = buildForkSeed(source.events, boundary)
-    let workspace: Workspace | undefined
+    let lineage: ForkLineage | undefined
     try {
-      workspace = await this.forkWorkspace(source.header)
+      lineage = await this.forkWorkspace(source.header)
     } catch (error) {
       throw new RemoteError(
         'gateway/internal',
@@ -264,7 +271,7 @@ export class SessionCommandController {
         {},
       )
     }
-    if (workspace !== undefined) this.rejectArchivedWorkspace(workspace, 'fork a session into')
+    if (lineage !== undefined) this.rejectArchivedWorkspace(lineage.workspace, 'fork a session into')
     const childId = brandString<SessionId>(`session-${randomUUID()}`)
     const composition = await this.agents.composeAgent(this.agents.presetForObservation(source))
     try {
@@ -291,9 +298,14 @@ export class SessionCommandController {
         {},
       )
     }
-    if (workspace !== undefined) {
+    if (lineage !== undefined) {
+      const { workspace, memberId } = lineage
       try {
-        await workspace.attachSession(childId)
+        // The child of an assigned member is assigned too: it follows the
+        // lineage's workspace instead of its own cwd.
+        await (workspace.assignedSessionIds.includes(memberId)
+          ? workspace.attachSession(childId, { assigned: true })
+          : workspace.attachSession(childId))
       } catch (error) {
         throw new RemoteError(
           'session/workspace-attach-failed',
@@ -577,14 +589,20 @@ export class SessionCommandController {
     )
   }
 
-  private async forkWorkspace(source: SessionHeader): Promise<Workspace | undefined> {
+  /**
+   * The workspace a fork lands in: the source's own owner, or for a subagent
+   * source the owner of its nearest accounted ancestor. `memberId` names the
+   * session that owner accounts, so the caller can read its assignment.
+   */
+  private async forkWorkspace(source: SessionHeader): Promise<ForkLineage | undefined> {
     const workspaces = this.ctx.workspaceRegistry.list()
     const direct = workspaces.find(workspace => workspace.sessionIds.includes(source.id))
-    if (direct !== undefined || source.origin !== 'subagent') return direct
+    if (direct !== undefined) return { workspace: direct, memberId: source.id }
+    if (source.origin !== 'subagent') return undefined
     const lineage = await this.ctx.sessionQuery.traceSession(source.id)
     for (const ancestor of lineage.ancestors) {
       const workspace = workspaces.find(candidate => candidate.sessionIds.includes(ancestor.header.id))
-      if (workspace !== undefined) return workspace
+      if (workspace !== undefined) return { workspace, memberId: ancestor.header.id }
     }
     return undefined
   }

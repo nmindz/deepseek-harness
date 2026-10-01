@@ -12,7 +12,7 @@ import { stat } from 'node:fs/promises'
 import type { SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import type { WorkspaceRecord } from './spec.ts'
-import type { Workspace, WorkspaceId } from './types.ts'
+import type { AttachSessionOptions, Workspace, WorkspaceId } from './types.ts'
 import { realpathNormalize } from './paths.ts'
 
 /** An insertSessionBefore request named a session or anchor not on the account (storage failures stay plain errors). */
@@ -99,53 +99,49 @@ export class WorkspaceEntity implements Workspace {
   }
 
   get sessionIds(): readonly SessionId[] {
-    return this.record.sessionIds.filter(id => this.host.sessionPath(id) === this.record.path)
+    return this.record.sessionIds.filter(id => memberOf(this.record, id, this.host))
+  }
+
+  get assignedSessionIds(): readonly SessionId[] {
+    return this.record.assignedSessionIds
   }
 
   async setTitle(title: string): Promise<void> {
     await this.mutate(record => ({ ...record, title }))
   }
 
-  async attachSession(sessionId: SessionId): Promise<void> {
+  async attachSession(sessionId: SessionId, options: AttachSessionOptions = {}): Promise<void> {
+    const assigned = options.assigned === true
     // Validation is skipped when the settled snapshot already accounts the
     // id: the cwd fact was checked when it first attached and both inputs
     // (stored header cwd, workspace path) are immutable. Membership itself is
     // decided on the write chain inside `mutate`, never on this snapshot.
     if (!this.record.sessionIds.includes(sessionId)) {
       const header = await this.host.readSessionHeader(sessionId)
-      if (header.cwd === undefined) {
-        throw new Error(
-          `cannot attach session '${sessionId}' to workspace '${this.record.path}': `
-          + 'its stored header carries no cwd to validate against',
-        )
-      }
-      let cwd: string
-      try {
-        cwd = await realpathNormalize(header.cwd)
-      } catch (error) {
-        throw new Error(
-          `cannot attach session '${sessionId}' to workspace '${this.record.path}': `
-          + `its cwd '${header.cwd}' does not resolve, so it cannot be validated`,
-          { cause: error },
-        )
-      }
-      if (!(await stat(cwd)).isDirectory()) {
-        throw new Error(
-          `cannot attach session '${sessionId}' to workspace '${this.record.path}': `
-          + `its cwd '${header.cwd}' is not a directory`,
-        )
-      }
-      if (cwd !== this.record.path) {
-        throw new Error(
-          `cannot attach session '${sessionId}' to workspace '${this.record.path}': `
-          + `its cwd resolves to '${cwd}'`,
-        )
-      }
-      this.host.rememberSessionPath(sessionId, cwd)
+      if (!assigned) await this.validateCwd(sessionId, header)
     }
-    await this.mutate(record => record.sessionIds.includes(sessionId)
-      ? record
-      : { ...record, sessionIds: [sessionId, ...record.sessionIds] })
+    await this.mutate((record) => {
+      const accounted = record.sessionIds.includes(sessionId)
+      if (accounted && (!assigned || record.assignedSessionIds.includes(sessionId))) return record
+      return {
+        ...record,
+        sessionIds: accounted ? record.sessionIds : [sessionId, ...record.sessionIds],
+        assignedSessionIds: assigned
+          ? [...record.assignedSessionIds, sessionId]
+          : record.assignedSessionIds,
+      }
+    })
+  }
+
+  /**
+   * Whether the durable account names a session, before the membership
+   * filter; the registry's owner lookup for a move uses this so a
+   * cwd-filtered candidate is still detached from its holder.
+   * @param sessionId - The session to test.
+   * @returns `true` when the record's `sessionIds` include the id.
+   */
+  accounts(sessionId: SessionId): boolean {
+    return this.record.sessionIds.includes(sessionId)
   }
 
   async insertSessionBefore(sessionId: SessionId, beforeSessionId?: SessionId): Promise<void> {
@@ -172,6 +168,7 @@ export class WorkspaceEntity implements Workspace {
   }
 
   async detachSession(sessionId: SessionId): Promise<void> {
+    // `mutate` narrows the assigned set to the surviving account, so the id leaves both arrays.
     await this.mutate(record => record.sessionIds.includes(sessionId)
       ? { ...record, sessionIds: record.sessionIds.filter(id => id !== sessionId) }
       : record)
@@ -187,11 +184,45 @@ export class WorkspaceEntity implements Workspace {
     }
   }
 
+  /** Reject a first attach whose header cwd does not identify this workspace's directory; publish the validated path. */
+  private async validateCwd(sessionId: SessionId, header: SessionHeader): Promise<void> {
+    if (header.cwd === undefined) {
+      throw new Error(
+        `cannot attach session '${sessionId}' to workspace '${this.record.path}': `
+        + 'its stored header carries no cwd to validate against',
+      )
+    }
+    let cwd: string
+    try {
+      cwd = await realpathNormalize(header.cwd)
+    } catch (error) {
+      throw new Error(
+        `cannot attach session '${sessionId}' to workspace '${this.record.path}': `
+        + `its cwd '${header.cwd}' does not resolve, so it cannot be validated`,
+        { cause: error },
+      )
+    }
+    if (!(await stat(cwd)).isDirectory()) {
+      throw new Error(
+        `cannot attach session '${sessionId}' to workspace '${this.record.path}': `
+        + `its cwd '${header.cwd}' is not a directory`,
+      )
+    }
+    if (cwd !== this.record.path) {
+      throw new Error(
+        `cannot attach session '${sessionId}' to workspace '${this.record.path}': `
+        + `its cwd resolves to '${cwd}'`,
+      )
+    }
+    this.host.rememberSessionPath(sessionId, cwd)
+  }
+
   /**
    * The single write path: run `fn` on the domain write chain via
-   * `table.update`, stamping `updatedAt` and pruning candidates that no
-   * longer pass the id-plus-canonical-cwd membership check, then swap the
-   * snapshot.
+   * `table.update`, stamping `updatedAt` and pruning unassigned candidates
+   * that no longer pass the canonical-cwd membership check, then swap the
+   * snapshot. Assigned ids survive the prune regardless of cwd, and the
+   * assigned set is narrowed to the ids the pruned account still holds.
    *
    * `fn` sees the value current at its chain slot, so membership decisions
    * (attach/detach idempotence) are race-free against queued writes; a fn
@@ -204,13 +235,17 @@ export class WorkspaceEntity implements Workspace {
     try {
       next = await this.host.table().update(this.id, (current) => {
         const changed = fn(current)
-        const sessionIds = changed.sessionIds.filter(
-          id => this.host.sessionPath(id) === changed.path,
-        )
+        const sessionIds = changed.sessionIds.filter(id => memberOf(changed, id, this.host))
         if (changed === current && sessionIds.length === current.sessionIds.length) {
           throw unchangedSentinel
         }
-        return { ...changed, sessionIds, updatedAt: new Date().toISOString() }
+        const kept = new Set(sessionIds)
+        return {
+          ...changed,
+          sessionIds,
+          assignedSessionIds: changed.assignedSessionIds.filter(id => kept.has(id)),
+          updatedAt: new Date().toISOString(),
+        }
       })
     } catch (error) {
       if (error === unchangedSentinel) return
@@ -218,4 +253,13 @@ export class WorkspaceEntity implements Workspace {
     }
     this.record = next
   }
+}
+
+/** The membership rule over one record: an explicit assignment, or a header whose canonical cwd is the workspace path. */
+function memberOf(
+  record: WorkspaceRecord,
+  sessionId: SessionId,
+  host: Pick<WorkspaceEntityHost, 'sessionPath'>,
+): boolean {
+  return record.assignedSessionIds.includes(sessionId) || host.sessionPath(sessionId) === record.path
 }

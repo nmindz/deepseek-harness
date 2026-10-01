@@ -56,11 +56,23 @@ export interface SessionActivity {
   readonly items?: readonly SessionActivityItem[]
 }
 
+/** Caller choices for {@link Workspace.attachSession}. */
+export interface AttachSessionOptions {
+  /**
+   * Record the session as an explicit assignment: membership then rests on
+   * the user's choice instead of the canonical-cwd match, so the header must
+   * exist but its cwd is neither compared nor required to resolve. The id
+   * stays a member until it is detached or moved again.
+   */
+  readonly assigned?: boolean
+}
+
 /**
  * One workspace: a stable id over an existing directory, a display title, and
- * an ordered candidate account of sessions. Membership requires both an id in
- * that account and a session header whose canonical cwd equals the workspace
- * path. Consumers only see this interface; the implementation stays private.
+ * an ordered candidate account of sessions. Membership requires an id in that
+ * account plus either an explicit assignment or a session header whose
+ * canonical cwd equals the workspace path. Consumers only see this
+ * interface; the implementation stays private.
  */
 export interface Workspace {
   /** Stable record id (generated uuid). */
@@ -83,14 +95,23 @@ export interface Workspace {
   readonly updatedAt: string
 
   /**
-   * Header-validated sessions in manually owned order: a new session is
-   * prepended at attach, explicit reordering goes through
-   * `insertSessionBefore`, and activity never reorders. The durable candidate
-   * account is filtered synchronously: missing headers, invalid cwd values,
-   * and canonical cwd mismatches are never returned. A subsequent workspace
-   * mutation prunes those filtered candidates durably.
+   * Member sessions in manually owned order: a new session is prepended at
+   * attach, explicit reordering goes through `insertSessionBefore`, and
+   * activity never reorders. The durable candidate account is filtered
+   * synchronously: an id in {@link assignedSessionIds} is always returned;
+   * any other candidate needs a header whose canonical cwd equals
+   * {@link path}, so missing headers, invalid cwd values, and canonical cwd
+   * mismatches are never returned. A subsequent workspace mutation prunes
+   * those filtered candidates durably.
    */
   readonly sessionIds: readonly SessionId[]
+
+  /**
+   * The accounted sessions a user moved in explicitly, in assignment order.
+   * Always a subset of the durable account, and exempt from the cwd filter
+   * that decides the other members of {@link sessionIds}.
+   */
+  readonly assignedSessionIds: readonly SessionId[]
 
   /**
    * Replace the display title durably.
@@ -100,17 +121,22 @@ export interface Workspace {
   setTitle(title: string): Promise<void>
 
   /**
-   * Prepend a session to this workspace's candidate account. An already
-   * accounted id resolves without writing, aside from the durable
-   * filtered-candidate prune every accepted mutation performs. A new id's
-   * live or persisted
-   * header cwd must resolve to an existing directory equal to {@link path};
-   * unknown ids, missing or invalid cwd values, and mismatches reject without
-   * writing.
+   * Prepend a session to this workspace's candidate account. Without
+   * `assigned`, a new id's live or persisted header cwd must resolve to an
+   * existing directory equal to {@link path}; unknown ids, missing or
+   * invalid cwd values, and mismatches reject without writing, and an already
+   * accounted id resolves without writing. With `assigned`, the header must
+   * exist (an unknown id rejects without writing) but its cwd is not read:
+   * the id is prepended and recorded in {@link assignedSessionIds}; an
+   * accounted but unassigned id is marked assigned in one write, and an
+   * accounted assigned id resolves without writing. Every accepted mutation
+   * also performs the durable filtered-candidate prune. Membership is decided
+   * on the domain write chain.
    * @param sessionId - The session to record.
+   * @param options - Whether the session is an explicit assignment.
    * @returns resolution after durability.
    */
-  attachSession(sessionId: SessionId): Promise<void>
+  attachSession(sessionId: SessionId, options?: AttachSessionOptions): Promise<void>
 
   /**
    * Move an accounted session within the manual order, DOM-insertBefore-like:
@@ -127,10 +153,11 @@ export interface Workspace {
   insertSessionBefore(sessionId: SessionId, beforeSessionId?: SessionId): Promise<void>
 
   /**
-   * Remove a session from this workspace's account. Idempotent: an id not on
-   * the account resolves without writing, aside from the durable
-   * filtered-candidate prune every accepted mutation performs; decided on
-   * the domain write chain like attach. Never touches the session's own stored log.
+   * Remove a session from this workspace's account and, when present, from
+   * {@link assignedSessionIds}. Idempotent: an id not on the account resolves
+   * without writing, aside from the durable filtered-candidate prune every
+   * accepted mutation performs; decided on the domain write chain like
+   * attach. Never touches the session's own stored log.
    * @param sessionId - The session to remove.
    * @returns resolution after durability.
    */

@@ -70,7 +70,7 @@ ctx.workspaceRegistry.list() // shows the project, newest first
 
 ### 将会话归入项目
 
-会话加入它运行目录所在的项目：在项目目录中创建会话，它就会出现在该项目下，新到旧排列。一个会话只能属于一个项目。目录无法校验的会话——没有记录目录，或目录被移动、删除——无法加入，保持 Ungrouped。
+会话加入它运行目录所在的项目：在项目目录中创建会话，它就会出现在该项目下，新到旧排列。一个会话只能属于一个项目。目录无法校验的会话——没有记录目录，或目录被移动、删除——不会自行加入，保持 Ungrouped。当会话无论在哪里运行都应归属某个项目时，把它显式移入该项目：它出现在该项目顶部，并留在那里直到再次被移动——移到另一个项目，或移出到 Ungrouped 会话——其目录不再决定它的位置。已移动会话的 fork 会跟随它进入同一项目。
 
 ### 隐藏、恢复会话与移除项目
 
@@ -95,7 +95,7 @@ Workspace 注册不意味着拥有其目录。未来的破坏性文件系统操�
 ### 设计理念
 
 - **每个规范路径一条记录。** `fs.realpath` 是唯一的一套唯一性规范：路径以规范化形式存储，因此指向已有记录目录的符号链接会与之冲突，唯一性即规范路径的字符串相等。
-- **成员资格是所有权加实时 cwd 事实。** 记录的 `sessionIds` 顺序是所有权真源；启动时的头部索引校验它，`sessionIds` 在读取时过滤，下一次变更会持久化剪除无效项。
+- **成员资格是所有权加实时 cwd 事实，或显式指派。** 记录的 `sessionIds` 顺序是所有权真源；启动时的头部索引校验它，`sessionIds` 在读取时过滤，下一次变更会持久化剪除无效项。记录的 `assignedSessionIds`（始终是 `sessionIds` 的子集）中的 id 免于该过滤与剪除：使它们成为成员的是用户的移动，而非 cwd。
 - **仅读取头部。** 引导与 attach 校验只读取 `SessionHeader` 字段；事件正文绝不加载。
 - **两次写入的变更带显式标记。** 创建与删除在记录/顺序对可能分叉之前先持久化 `pendingMutation` 标记，因此启动只补全被中断的操作，未标记的分叉作为损坏明确报错。
 - **串行化写入。** 注册表操作跑在同一条操作链上；实体变更通过领域写链上的 `table.update` 执行，写入 `updatedAt`，并在其所在的链位置决定成员资格。
@@ -109,6 +109,8 @@ Workspace 注册不意味着拥有其目录。未来的破坏性文件系统操�
 
 `archiveWorkspace(workspaceId)` 对该 Workspace 经会话头校验的 `sessionIds` 执行同一套准入：按记账顺序，对每个尚不在会话归档集合中的会话询问一次活动 waterfall，并以 `WorkspaceActiveError` 拒绝，其 `sessions` 列出每个活跃会话及其活动；未知 id 以 `WorkspaceUnknownWorkspaceError` 拒绝。带 `{ stopActivity: true }` 时检查仍会运行以确定要停止谁，先写入已归档 Workspace 集合，再对每个报告了活动的会话派发一次停止事件。`unarchiveWorkspace(workspaceId)` 直接移除 id，不做存在性检查。`owningWorkspaceOf(sessionId)` 在有序投影中扫描记账该会话的唯一 Workspace；`isSessionEffectivelyArchived(sessionId)` 在会话位于会话归档集合中、或其所属 Workspace 已归档时为真——这是所有门禁与分组界面共同参考的唯一推导。
 
+`moveSession(sessionId, workspaceId?)` 把一个会话在项目之间移动或移出所有项目，并返回 `{ previousWorkspaceId }`。目标必须已注册（`WorkspaceUnknownWorkspaceError`）且未归档（`WorkspaceArchivedError`），会话必须处于运行时或已持久化（`WorkspaceUnknownSessionError`）；所有检查都在任何写入之前完成。当前持有者是持久化记账中记有该会话的项目，即使 cwd 过滤把它隐藏；已被目标持有的会话，或省略目标时本就 Ungrouped 的会话，不写入即返回。否则先写入持有者的 detach，再写入目标的 attach，两者都在注册表操作链上串行，因此中断只会让会话变成 Ungrouped，绝不会被记账两次。目标通过 `attachSession(sessionId, { assigned: true })` 附加：会话头必须存在，但不比较其 cwd，也不要求它可解析；id 被前置到 `sessionIds` 并记入 `assignedSessionIds`，直到下一次移动或 detach 之前始终是成员；不带该选项的 `attachSession` 保持 cwd 相等规则。`Workspace.assignedSessionIds` 暴露指派集合，`Workspace.sessionIds` 返回每个已指派 id，加上规范 cwd 等于项目路径的其他每个已记账 id。移动不触碰置顶与归档集合。
+
 ### 源码地图
 
 | 文件 | 职责 |
@@ -121,11 +123,11 @@ Workspace 注册不意味着拥有其目录。未来的破坏性文件系统操�
 
 ### 持久形态
 
-注册表打开 `workspace` 领域（版本 2）：一张以 `WorkspaceId` 为键的 `workspaces` 表，加上一个持有 `workspaceIds`（权威显示顺序）、`archivedSessionIds`、`pinnedSessionIds`、`archivedWorkspaceIds`、可选的首次使用身份 `defaultWorkspaceId` 与可选 `pendingMutation` 标记的全局状态。三个集合存储 id 字符串，默认值为空，因此每个字段出现之前写入的介质都能原样解析，且不包含逐项对象或时间戳；置顶数组把最近置顶的 id 放在前面。归档会话在同一次全局状态写入中清除置顶，但不改变 Workspace 成员关系。归档 Workspace 只把它的 id 加入 `archivedWorkspaceIds`，别无其他：记录、其 `workspaceIds` 槽位与其 `sessionIds` 记账都不动，其会话自身的标志也绝不写入。删除 Workspace 在移除顺序的同一次写入中把它的 id 从 `archivedWorkspaceIds` 中去掉。两种取消归档都不做存在性探测，因为从集合中移除 id 不可能引入未知 id，而两种归档都会在加入前校验目标。
+注册表打开 `workspace` 领域（版本 2）：一张以 `WorkspaceId` 为键的 `workspaces` 表——每条记录携带其规范 `path`、`title`、有序的 `sessionIds` 记账、`assignedSessionIds`（显式移入的会话，始终是 `sessionIds` 的子集，默认值为空，因此更早的记录能原样解析）与时间戳——加上一个持有 `workspaceIds`（权威显示顺序）、`archivedSessionIds`、`pinnedSessionIds`、`archivedWorkspaceIds`、可选的首次使用身份 `defaultWorkspaceId` 与可选 `pendingMutation` 标记的全局状态。三个集合存储 id 字符串，默认值为空，因此每个字段出现之前写入的介质都能原样解析，且不包含逐项对象或时间戳；置顶数组把最近置顶的 id 放在前面。归档会话在同一次全局状态写入中清除置顶，但不改变 Workspace 成员关系。归档 Workspace 只把它的 id 加入 `archivedWorkspaceIds`，别无其他：记录、其 `workspaceIds` 槽位与其 `sessionIds` 记账都不动，其会话自身的标志也绝不写入。删除 Workspace 在移除顺序的同一次写入中把它的 id 从 `archivedWorkspaceIds` 中去掉。两种取消归档都不做存在性探测，因为从集合中移除 id 不可能引入未知 id，而两种归档都会在加入前校验目标。
 
 ### 生命周期
 
-启动时，注册表打开领域、若存在标记则补全被标记的变更、校验已存状态——重复路径、重复会话记账、顺序漂移，以及重复出现或不在顺序中的已归档 Workspace id 都会明确报错——并在尚未初始化时先凭持久化头部引导历史、最后写入已初始化标记，因此被中断的引导可以安全恢复。全新空注册表一旦初始化即成为正式状态，绝不会再次引导。
+启动时，注册表打开领域、若存在标记则补全被标记的变更、校验已存状态——重复路径、重复会话记账、顺序漂移、重复出现或不在顺序中的已归档 Workspace id，以及重复出现或不在其自身记录记账中的已指派会话 id 都会明确报错——并在尚未初始化时先凭持久化头部引导历史、最后写入已初始化标记，因此被中断的引导可以安全恢复。全新空注册表一旦初始化即成为正式状态，绝不会再次引导。
 
 ### 失败与恢复
 
@@ -173,7 +175,7 @@ Workspace 注册不意味着拥有其目录。未来的破坏性文件系统操�
 这些限制说明项目列表何时不合适，或何时需要特别的运维注意。它们是当前包约束，不是任务积压。
 
 - **移除绝不删除数据**——移除项目会保留其文件夹、文件与会话历史；这些会话变成 Ungrouped，而会话删除与文件夹移除是彼此独立且尚未提供的功能。
-- **只有带记录目录的会话才能加入**——只有记录中带有可解析为项目路径的目录的会话才属于项目；没有目录的会话保持 Ungrouped，来自其他目录的会话无法移入。
+- **自动分组需要匹配的目录；显式移动则不需要**——只有记录中带有可解析为项目路径的目录的会话才会自行加入项目，因此没有目录或来自其他目录的会话保持 Ungrouped，直到被显式移入；一经移入即为指派，其目录不再决定成员资格，它会留在被放置的位置直到再次被移动。
 - **外部变更延迟可见**——如果另一进程删除或损坏目录，项目只能在下次刷新或重启后反映出来。
 - **归档与取消归档执行不同的会话校验**——恢复只是从归档集合中移除 id，因此会话已不存在的条目仍能取消归档，也不会留下未知引用；对未归档 id 执行恢复不写盘即完成，而 `archiveSession` 会拒绝既非实时也未持久化的会话。
 - **活动检查与归档写入不是一个原子步骤**——在提供方作答与持久化写入之间开始的回合会在隐藏状态下运行，`agent/pre-step` 先于该写入的每个模型步连同其工具调用照常执行；API Session Controller 的门禁把写入之后提出的第一步以 `blocked` 收口，因此暴露面以该写入的时延为界，实际上是一个模型步。对 Workspace 而言，这个窗口横跨每个记账会话各一次的活动询问，它们在注册表队列内顺序执行。

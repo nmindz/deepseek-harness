@@ -25,9 +25,10 @@ Consumers see only the `Workspace` interface; the implementation stays package-p
 ```ts type-equiv
 /**
  * One workspace: a stable id over an existing directory, a display title, and
- * an ordered candidate account of sessions. Membership requires both an id in
- * that account and a session header whose canonical cwd equals the workspace
- * path. Consumers only see this interface; the implementation stays private.
+ * an ordered candidate account of sessions. Membership requires an id in that
+ * account plus either an explicit assignment or a session header whose
+ * canonical cwd equals the workspace path. Consumers only see this
+ * interface; the implementation stays private.
  */
 interface Workspace {
   /** Stable record id (generated uuid). */
@@ -50,14 +51,23 @@ interface Workspace {
   readonly updatedAt: string
 
   /**
-   * Header-validated sessions in manually owned order: a new session is
-   * prepended at attach, explicit reordering goes through
-   * `insertSessionBefore`, and activity never reorders. The durable candidate
-   * account is filtered synchronously: missing headers, invalid cwd values,
-   * and canonical cwd mismatches are never returned. A subsequent workspace
-   * mutation prunes those filtered candidates durably.
+   * Member sessions in manually owned order: a new session is prepended at
+   * attach, explicit reordering goes through `insertSessionBefore`, and
+   * activity never reorders. The durable candidate account is filtered
+   * synchronously: an id in {@link assignedSessionIds} is always returned;
+   * any other candidate needs a header whose canonical cwd equals
+   * {@link path}, so missing headers, invalid cwd values, and canonical cwd
+   * mismatches are never returned. A subsequent workspace mutation prunes
+   * those filtered candidates durably.
    */
   readonly sessionIds: readonly SessionId[]
+
+  /**
+   * The accounted sessions a user moved in explicitly, in assignment order.
+   * Always a subset of the durable account, and exempt from the cwd filter
+   * that decides the other members of {@link sessionIds}.
+   */
+  readonly assignedSessionIds: readonly SessionId[]
 
   /**
    * Replace the display title durably.
@@ -67,17 +77,22 @@ interface Workspace {
   setTitle(title: string): Promise<void>
 
   /**
-   * Prepend a session to this workspace's candidate account. An already
-   * accounted id resolves without writing, aside from the durable
-   * filtered-candidate prune every accepted mutation performs. A new id's
-   * live or persisted
-   * header cwd must resolve to an existing directory equal to {@link path};
-   * unknown ids, missing or invalid cwd values, and mismatches reject without
-   * writing.
+   * Prepend a session to this workspace's candidate account. Without
+   * `assigned`, a new id's live or persisted header cwd must resolve to an
+   * existing directory equal to {@link path}; unknown ids, missing or
+   * invalid cwd values, and mismatches reject without writing, and an already
+   * accounted id resolves without writing. With `assigned`, the header must
+   * exist (an unknown id rejects without writing) but its cwd is not read:
+   * the id is prepended and recorded in {@link assignedSessionIds}; an
+   * accounted but unassigned id is marked assigned in one write, and an
+   * accounted assigned id resolves without writing. Every accepted mutation
+   * also performs the durable filtered-candidate prune. Membership is decided
+   * on the domain write chain.
    * @param sessionId - The session to record.
+   * @param options - Whether the session is an explicit assignment.
    * @returns resolution after durability.
    */
-  attachSession(sessionId: SessionId): Promise<void>
+  attachSession(sessionId: SessionId, options?: AttachSessionOptions): Promise<void>
 
   /**
    * Move an accounted session within the manual order, DOM-insertBefore-like:
@@ -94,10 +109,11 @@ interface Workspace {
   insertSessionBefore(sessionId: SessionId, beforeSessionId?: SessionId): Promise<void>
 
   /**
-   * Remove a session from this workspace's account. Idempotent: an id not on
-   * the account resolves without writing, aside from the durable
-   * filtered-candidate prune every accepted mutation performs; decided on
-   * the domain write chain like attach. Never touches the session's own stored log.
+   * Remove a session from this workspace's account and, when present, from
+   * {@link assignedSessionIds}. Idempotent: an id not on the account resolves
+   * without writing, aside from the durable filtered-candidate prune every
+   * accepted mutation performs; decided on the domain write chain like
+   * attach. Never touches the session's own stored log.
    * @param sessionId - The session to remove.
    * @returns resolution after durability.
    */
@@ -558,6 +574,29 @@ delete(id: WorkspaceId): Promise<boolean>
 insertBefore(id: WorkspaceId, beforeId?: WorkspaceId): Promise<readonly WorkspaceId[]>
 
 /**
+ * Move one session between workspaces, or out of every workspace. The
+ * target must be in the durable registry order — an unknown id rejects
+ * with {@link WorkspaceUnknownWorkspaceError} — and must not be archived
+ * ({@link WorkspaceArchivedError}); the session must exist, live or in
+ * session persistence ({@link WorkspaceUnknownSessionError}). Every check
+ * runs before anything is written. The current owner is the workspace
+ * whose durable account names the session, found in registry order
+ * before the membership filter, so a cwd-filtered candidate is still
+ * detached. A session already held by the target, or Ungrouped when the
+ * target is omitted, resolves without writing. Otherwise the owner's
+ * detach is written first and the target's assigned attach second, both
+ * serialized on the registry operation chain: an interruption between the
+ * two leaves the session Ungrouped, never accounted twice. The target
+ * records the session in its `assignedSessionIds`, so its membership no
+ * longer depends on its cwd and survives until the next move or detach.
+ * The registry-global pin and archive sets are not touched.
+ * @param sessionId - The session to move.
+ * @param workspaceId - The destination workspace; omitted leaves the session Ungrouped.
+ * @returns the previous owner after both writes are durable.
+ */
+moveSession(sessionId: SessionId, workspaceId?: WorkspaceId): Promise<MoveSessionResult>
+
+/**
  * Archive one session durably. The session must exist (live or in session
  * persistence); its workspace accounting — or lack of one — is irrelevant.
  * Without `stopActivity` the session must also be inactive: the
@@ -592,7 +631,7 @@ unarchiveSession(sessionId: SessionId): Promise<void>
  * Archive one workspace durably. The workspace must be in the durable
  * registry order; an unknown id rejects with
  * {@link WorkspaceUnknownWorkspaceError}. Every accounted session (the
- * entity's header-validated `sessionIds`) not already in
+ * entity's member `sessionIds`) not already in
  * `archivedSessionIds` is asked through the `workspace/session-activity`
  * waterfall, in account order. Without `stopActivity` any reported
  * activity rejects with {@link WorkspaceActiveError} listing every active
@@ -624,7 +663,7 @@ archiveWorkspace(id: WorkspaceId, options: ArchiveWorkspaceOptions = {}): Promis
 unarchiveWorkspace(id: WorkspaceId): Promise<void>
 
 /**
- * The workspace whose header-validated `sessionIds` include a session.
+ * The workspace whose member `sessionIds` include a session.
  * Session accounting is one-owner, so at most one entity qualifies; the
  * scan runs in registry order over the synchronous projection and performs
  * no persistence reads.
