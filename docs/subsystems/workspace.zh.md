@@ -180,6 +180,8 @@ interface SessionActivity {
 
 整个工作区通过第二个注册表全局持久集合 `archivedWorkspaceIds` 以同样方式归档。`archiveWorkspace(workspaceId)` 对每个尚未进入 `archivedSessionIds` 的已记账会话各询问 waterfall 一次，对任何上报的活动以 `WorkspaceActiveError`（`workspaceId`、`sessions`：每个活动会话及其 `activity`）拒绝且不写入；控制器把它映射为携带相同 details 的 `workspace/workspace-active`，未知 id 映射为 `workspace/not-found`。带 `stopActivity: true`（`ArchiveWorkspaceOptions`，由 `WorkspaceArchiveWorkspaceRequest` 暴露）时先写入集合，再为每个上报活动的会话派发 `workspace/session-stop`。其余一概不写：记录、顺序槽位、会话账目以及每个会话自己的置顶与归档标记原样保留，因此 `unarchiveWorkspace(workspaceId)` 原位恢复该分组，而先前单独归档的会话仍保持归档。工作区归档期间，`isSessionEffectivelyArchived(sessionId)` 将其已记账会话报告为已归档；会话控制器的 `agent/pre-step` 门禁读取这一派生答案，带该 `workspaceId` 的 `session.create` 或对其会话的 `session.fork` 以 `workspace/archived` 拒绝。follow 流在基线中和 `archivedWorkspaces` 增量中携带该集合；两个动词都返回完整集合 `WorkspaceArchivedWorkspacesValue`。
 
+成员资格也可以由用户决定。记录的 `assignedSessionIds` 列出显式移入的已记账会话；被分配的 id 无论头部 cwd 如何都是成员，而其他成员仍需规范 cwd 匹配，且该集合始终是 `sessionIds` 的子集（启动校验拒绝游离或重复的分配）。`moveSession(sessionId, workspaceId?)` 在注册表的串行链上运行：未知目标（`WorkspaceUnknownWorkspaceError`）、已归档目标（`WorkspaceArchivedError`）与未知会话（`WorkspaceUnknownSessionError`）在任何写入之前被拒绝；当前持有者通过记录层面的账目找到，因此被 cwd 过滤掉的候选同样会被释放；先写分离，再在目标上执行 `attachSession(sessionId, { assigned: true })`，所以被中断的移动只会让会话落到“未分组”，绝不会双重归属。结果为 `{ previousWorkspaceId }`。控制器的 `workspace.moveSession` 把这三种拒绝映射为 `workspace/not-found`、`workspace/archived` 与 `session/not-found`，返回 `WorkspaceMoveSessionValue`（有目标时的目标行，加上 `previousWorkspaceId`），原持有者的行依赖 `upsert` 增量到达；`WorkspaceView.assignedSessionIds` 投影出分配集合。被分配成员的分叉以 assigned 方式挂接到同一 Workspace。决策记录见 [assigned-membership Agent Note](../../.agents/notes/implemented/feature/2026-09-30-assigned-session-membership-overrides-cwd.zh.md)。
+
 ## 消费方
 
 [`dsh-workspace-controller`](../../packages/api/workspace-controller) 经 `ctx.workspaceRegistry` 向 GUI 客户端提供工作区 CRUD，[`dsh-session-controller`](../../packages/api/session-controller) 执行上文「先建会话再 attach」的流程。[dsh-agent-instructions](../../packages/context/agent-instructions) 尽管名字如此，却**不是**消费方：它在 agent 自己的 cwd 下发现 AGENTS.md 风格的指令文件，从不触碰 `ctx.workspaceRegistry`——两者共用的这个词指的是用户的工作目录，而非本注册表的实体。
@@ -393,6 +395,16 @@ Host service backing the generated `ctx.remote.workspace` namespace.
  * @returns the updated Workspace projection.
  */
 @Remote('insertSessionBefore') insertSessionBefore(request: WorkspaceInsertSessionBeforeRequest): Promise<WorkspaceValue>
+
+/**
+ * Move one known Session into another Workspace as an explicit assignment,
+ * or out of every Workspace. The Session keeps running in its own
+ * directory; only its grouping changes. Fails as `workspace/not-found`,
+ * `workspace/archived`, or `session/not-found` before any write.
+ * @param request - Session identity and optional destination Workspace.
+ * @returns the destination's complete row when there is one, and the previous owner when there was one.
+ */
+@Remote('moveSession') moveSession(request: WorkspaceMoveSessionRequest): Promise<WorkspaceMoveSessionValue>
 
 /**
  * Hide one known Session from Workspace grouping surfaces.

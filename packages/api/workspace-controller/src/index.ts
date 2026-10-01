@@ -19,6 +19,8 @@ import type {
   WorkspaceFollowFrame,
   WorkspaceInsertBeforeRequest,
   WorkspaceInsertSessionBeforeRequest,
+  WorkspaceMoveSessionRequest,
+  WorkspaceMoveSessionValue,
   WorkspaceOrderValue,
   WorkspacePinSessionRequest,
   WorkspacePinValue,
@@ -147,6 +149,19 @@ export class WorkspaceController extends TypertRemoteService {
   @Remote('insertSessionBefore')
   insertSessionBefore(request: WorkspaceInsertSessionBeforeRequest): Promise<WorkspaceValue> {
     return this.commands.insertSessionBefore(request)
+  }
+
+  /**
+   * Move one known Session into another Workspace as an explicit assignment,
+   * or out of every Workspace. The Session keeps running in its own
+   * directory; only its grouping changes. Fails as `workspace/not-found`,
+   * `workspace/archived`, or `session/not-found` before any write.
+   * @param request - Session identity and optional destination Workspace.
+   * @returns the destination's complete row when there is one, and the previous owner when there was one.
+   */
+  @Remote('moveSession')
+  moveSession(request: WorkspaceMoveSessionRequest): Promise<WorkspaceMoveSessionValue> {
+    return this.commands.moveSession(request)
   }
 
   /**

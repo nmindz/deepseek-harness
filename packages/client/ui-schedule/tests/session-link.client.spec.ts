@@ -42,7 +42,7 @@ describe('linked Session availability', () => {
 
   it('reports a Session archived through its Workspace as archived', () => {
     const view = (workspaceId: string, sessionIds: SessionId[]): WorkspaceView => ({
-      workspaceId: workspaceId as WorkspaceId, path: `/w/${workspaceId}`, title: workspaceId, sessionIds,
+      workspaceId: workspaceId as WorkspaceId, path: `/w/${workspaceId}`, title: workspaceId, sessionIds, assignedSessionIds: [],
       createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
     })
     const items = [view('live', []), view('shelved', [id])]

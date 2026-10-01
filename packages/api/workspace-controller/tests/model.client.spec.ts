@@ -14,6 +14,8 @@ import type {
   WorkspaceFollowFrame,
   WorkspaceInsertBeforeRequest,
   WorkspaceInsertSessionBeforeRequest,
+  WorkspaceMoveSessionRequest,
+  WorkspaceMoveSessionValue,
   WorkspaceOrderValue,
   WorkspacePinSessionRequest,
   WorkspacePinValue,
@@ -42,6 +44,7 @@ function workspace(
     path: `/w/${id}`,
     title: id,
     sessionIds,
+    assignedSessionIds: [],
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt,
   }
@@ -113,6 +116,13 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
     _request: WorkspaceUnarchiveWorkspaceRequest,
   ) => Promise<RemoteResult<WorkspaceArchivedWorkspacesValue>> = () =>
     Promise.resolve(remoteOk({ archivedWorkspaceIds: [] }))
+  onMoveSession: (
+    request: WorkspaceMoveSessionRequest,
+  ) => Promise<RemoteResult<WorkspaceMoveSessionValue>> = request => Promise.resolve(remoteOk(
+    request.workspaceId === undefined
+      ? {}
+      : { workspace: { ...workspace(String(request.workspaceId), [request.sessionId]), assignedSessionIds: [request.sessionId] } },
+  ))
 
   create(request: WorkspaceCreateRequest): Promise<RemoteResult<WorkspaceCreateValue>> {
     this.record('create', request)
@@ -171,6 +181,11 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
   ): Promise<RemoteResult<WorkspaceArchivedWorkspacesValue>> {
     this.record('unarchiveWorkspace', request)
     return this.onUnarchiveWorkspace(request)
+  }
+
+  moveSession(request: WorkspaceMoveSessionRequest): Promise<RemoteResult<WorkspaceMoveSessionValue>> {
+    this.record('moveSession', request)
+    return this.onMoveSession(request)
   }
 
   follow(_signal?: AbortSignal): RemoteStreamHandle<WorkspaceFollowFrame, never> {
@@ -322,6 +337,38 @@ describe('ClientWorkspaceModel', () => {
     secondGate.resolve(workspaceError(new RemoteError('workspace/not-found', 'second rejected', { workspaceId: wid('two') })))
     await expect(second).resolves.toMatchObject({ ok: false })
     expect(model.getSnapshot().items.map(item => item.workspaceId)).toEqual(['one', 'two', 'three'])
+  })
+
+  it('merges the destination row a move returns and sends an Ungrouped move without a workspaceId', async () => {
+    const remote = new FakeWorkspaceRemote()
+    const model = modelFor(remote)
+    baseline(model, [workspace('from', [sid('s1')]), workspace('to')])
+
+    const moved = await model.moveSession(sid('s1'), wid('to'))
+    expect(moved).toMatchObject({ ok: true })
+    expect(remote.calls.at(-1)).toEqual({ method: 'moveSession', request: { sessionId: 's1', workspaceId: 'to' } })
+    const to = model.getSnapshot().items.find(item => item.workspaceId === wid('to'))
+    expect(to?.sessionIds).toEqual(['s1'])
+    expect(to?.assignedSessionIds).toEqual(['s1'])
+
+    const before = model.getSnapshot()
+    const ungrouped = await model.moveSession(sid('s1'))
+    expect(ungrouped).toMatchObject({ ok: true, value: {} })
+    expect(remote.calls.at(-1)).toEqual({ method: 'moveSession', request: { sessionId: 's1' } })
+    // No destination row: the previous owner's row arrives through the follow stream.
+    expect(model.getSnapshot()).toBe(before)
+  })
+
+  it('leaves the projection unchanged when a move is refused', async () => {
+    const remote = new FakeWorkspaceRemote()
+    const model = modelFor(remote)
+    baseline(model, [workspace('to')])
+    remote.onMoveSession = () => Promise.resolve(workspaceError(
+      new RemoteError('workspace/archived', 'archived destination', { workspaceId: wid('to') }),
+    ))
+    const before = model.getSnapshot()
+    await expect(model.moveSession(sid('s1'), wid('to'))).resolves.toMatchObject({ ok: false })
+    expect(model.getSnapshot()).toBe(before)
   })
 
   it('retains removal tombstones across later baselines', () => {

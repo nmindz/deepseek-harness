@@ -563,7 +563,7 @@ describe('workspaces', () => {
       const signal = new AbortController().signal
       await expect(runtime.workspaces.initializeDefault(signal)).resolves.toBeUndefined()
       const workspace = {
-        workspaceId: 'default' as WorkspaceId, title: 'default-workspace', path: '/default', sessionIds: [],
+        workspaceId: 'default' as WorkspaceId, title: 'default-workspace', path: '/default', sessionIds: [], assignedSessionIds: [],
         createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z',
       }
       const initialize = vi.fn(async () => workspace)
@@ -860,11 +860,29 @@ describe('workspaces action face', () => {
     expect(ws.list.getSnapshot().archivedWorkspaceIds).toEqual(['w1', 'w0'])
     await ws.unarchiveWorkspace('w0' as WorkspaceId)
     expect(ws.list.getSnapshot().archivedWorkspaceIds).toEqual(['w1'])
+    // Default move mirrors the production effect on the list state: the
+    // Session leaves its holder and leads the destination as assigned; a move
+    // to Ungrouped only detaches and reports no destination row.
+    await ws.update((draft) => {
+      draft.items = [
+        { workspaceId: 'wa' as WorkspaceId, path: '/a', title: 'a', sessionIds: ['s9' as SessionId], assignedSessionIds: [], createdAt: '', updatedAt: '' },
+        { workspaceId: 'wb' as WorkspaceId, path: '/b', title: 'b', sessionIds: ['s8' as SessionId], assignedSessionIds: [], createdAt: '', updatedAt: '' },
+      ]
+    })
+    const movedIn = await ws.moveSession('s9' as SessionId, 'wb' as WorkspaceId)
+    expect(movedIn.previousWorkspaceId).toBe('wa')
+    expect(movedIn.workspace).toMatchObject({ workspaceId: 'wb', sessionIds: ['s9', 's8'], assignedSessionIds: ['s9'] })
+    expect(ws.list.getSnapshot().items[0]?.sessionIds).toEqual([])
+    const movedOut = await ws.moveSession('s9' as SessionId)
+    expect(movedOut).toEqual({ previousWorkspaceId: 'wb' })
+    expect(ws.list.getSnapshot().items.map(item => item.sessionIds)).toEqual([[], ['s8']])
+    expect(await ws.moveSession('unknown' as SessionId)).toEqual({})
     expect(ws.calls.map(c => c.method)).toEqual(
       ['create', 'create', 'rename', 'delete', 'insertBefore', 'insertSessionBefore',
         'archiveSession', 'archiveSession', 'unarchiveSession',
-        'archiveWorkspace', 'archiveWorkspace', 'unarchiveWorkspace'])
-    expect(ws.calls.at(-3)).toEqual({ method: 'archiveWorkspace', args: ['w1', { stopActivity: true }] })
+        'archiveWorkspace', 'archiveWorkspace', 'unarchiveWorkspace',
+        'moveSession', 'moveSession', 'moveSession'])
+    expect(ws.calls.at(-6)).toEqual({ method: 'archiveWorkspace', args: ['w1', { stopActivity: true }] })
 
     ws.stub('create', () => Promise.resolve({ workspaceId: 'ws-x', title: 'X', path: '/x', sessionIds: [] } as never))
     ws.stub('rename', () => Promise.resolve({ workspaceId: 'w1', title: 'S', path: '/s', sessionIds: [] } as never))
@@ -876,6 +894,7 @@ describe('workspaces action face', () => {
     ws.stub('unarchiveSession', () => Promise.resolve())
     ws.stub('archiveWorkspace', () => Promise.resolve())
     ws.stub('unarchiveWorkspace', () => Promise.resolve())
+    ws.stub('moveSession', () => Promise.resolve({ previousWorkspaceId: 'stubbed' as WorkspaceId }))
     expect((await ws.create({ path: '/y' })).title).toBe('X')
     expect((await ws.rename('w1' as WorkspaceId, 'z')).title).toBe('S')
     await ws.delete('w1' as WorkspaceId)
@@ -891,6 +910,9 @@ describe('workspaces action face', () => {
     expect(ws.list.getSnapshot().archivedWorkspaceIds).toEqual(['w1'])
     await ws.unarchiveWorkspace('w1' as WorkspaceId)
     expect(ws.list.getSnapshot().archivedWorkspaceIds).toEqual(['w1'])
+    const stubbedMove = ws.list.getSnapshot().items
+    expect(await ws.moveSession('s8' as SessionId, 'wa' as WorkspaceId)).toEqual({ previousWorkspaceId: 'stubbed' })
+    expect(ws.list.getSnapshot().items).toBe(stubbedMove)
     await runtime.dispose()
   })
 })

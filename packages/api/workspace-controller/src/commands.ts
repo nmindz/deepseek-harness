@@ -5,6 +5,7 @@ import type { Workspace } from '@deepseek-ai/dsh-workspace'
 import {
   WorkspaceActiveError,
   WorkspaceActiveSessionError,
+  WorkspaceArchivedError,
   WorkspaceArchivedSessionPinError,
   WorkspaceId,
   WorkspaceMoveInvalidError,
@@ -25,6 +26,8 @@ import type {
   WorkspaceDeleteValue,
   WorkspaceInsertBeforeRequest,
   WorkspaceInsertSessionBeforeRequest,
+  WorkspaceMoveSessionRequest,
+  WorkspaceMoveSessionValue,
   WorkspaceOrderValue,
   WorkspacePinSessionRequest,
   WorkspacePinValue,
@@ -154,6 +157,39 @@ export class WorkspaceCommands {
       )
     }
     return { workspace: workspaceView(workspace) }
+  }
+
+  /**
+   * Move one known Session into a Workspace as an explicit assignment, or
+   * out of every Workspace. The registry detaches the current owner first
+   * and attaches the target second; an unknown target fails as
+   * `workspace/not-found`, an archived target as `workspace/archived`, and
+   * an unknown Session as `session/not-found`, each before any write.
+   * @param request - Session identity and optional destination Workspace.
+   * @returns the destination's row when there is one, and the previous owner when there was one.
+   */
+  moveSession(request: WorkspaceMoveSessionRequest): Promise<WorkspaceMoveSessionValue> {
+    return this.enqueue(async () => {
+      const workspaceId = request.workspaceId === undefined ? undefined : WorkspaceId(request.workspaceId)
+      let previousWorkspaceId: WorkspaceId | undefined
+      try {
+        ({ previousWorkspaceId } = await this.ctx.workspaceRegistry.moveSession(request.sessionId, workspaceId))
+      } catch (error) {
+        if (error instanceof WorkspaceUnknownWorkspaceError) throw workspaceNotFound(error.workspaceId)
+        if (error instanceof WorkspaceArchivedError) {
+          throw new RemoteError('workspace/archived', error.message, { workspaceId: error.workspaceId }, { cause: error })
+        }
+        if (error instanceof WorkspaceUnknownSessionError) {
+          throw new RemoteError('session/not-found', error.message, { sessionId: request.sessionId }, { cause: error })
+        }
+        throw error
+      }
+      const target = workspaceId === undefined ? undefined : this.requireWorkspace(workspaceId)
+      return {
+        ...target === undefined ? {} : { workspace: workspaceView(target) },
+        ...previousWorkspaceId === undefined ? {} : { previousWorkspaceId },
+      }
+    })
   }
 
   /**

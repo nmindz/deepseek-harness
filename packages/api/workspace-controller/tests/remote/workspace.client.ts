@@ -20,6 +20,8 @@ import type {
   WorkspaceId,
   WorkspaceInsertBeforeRequest,
   WorkspaceInsertSessionBeforeRequest,
+  WorkspaceMoveSessionRequest,
+  WorkspaceMoveSessionValue,
   WorkspaceOrderValue,
   WorkspacePinSessionRequest,
   WorkspacePinValue,
@@ -58,6 +60,7 @@ export function workspace(id: string, overrides: Partial<WorkspaceView> = {}): W
     path: `/work/${id}`,
     title: id,
     sessionIds: [],
+    assignedSessionIds: [],
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -112,6 +115,13 @@ export const workspaceWorld: RemoteTable = {
     'workspace/unarchiveSession': (_request: WorkspaceUnarchiveSessionRequest): RemoteResult<WorkspaceArchiveValue> => ok({ archivedSessionIds: [] }),
     'workspace/archiveWorkspace': (request: WorkspaceArchiveWorkspaceRequest): RemoteResult<WorkspaceArchivedWorkspacesValue> => ok({ archivedWorkspaceIds: [request.workspaceId] }),
     'workspace/unarchiveWorkspace': (_request: WorkspaceUnarchiveWorkspaceRequest): RemoteResult<WorkspaceArchivedWorkspacesValue> => ok({ archivedWorkspaceIds: [] }),
+    'workspace/moveSession': (request: WorkspaceMoveSessionRequest): RemoteResult<WorkspaceMoveSessionValue> => ok(
+      request.workspaceId === undefined
+        ? {}
+        : {
+          workspace: workspace(String(request.workspaceId), { sessionIds: [request.sessionId], assignedSessionIds: [request.sessionId] }),
+        },
+    ),
     'workspace/pinSession': (request: WorkspacePinSessionRequest): RemoteResult<WorkspacePinValue> => ok({ pinnedSessionIds: [request.sessionId] }),
     'workspace/unpinSession': (_request: WorkspaceUnpinSessionRequest): RemoteResult<WorkspacePinValue> => ok({ pinnedSessionIds: [] }),
   },

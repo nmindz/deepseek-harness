@@ -23,6 +23,12 @@ export interface WorkspaceView {
   readonly title: string
   /** Sessions accounted to this Workspace in manual order. */
   readonly sessionIds: readonly SessionId[]
+  /**
+   * The members a user moved in explicitly, in assignment order: a subset of
+   * `sessionIds` whose membership rests on that choice instead of the
+   * canonical-cwd match.
+   */
+  readonly assignedSessionIds: readonly SessionId[]
   /** ISO-8601 creation instant. */
   readonly createdAt: string
   /** ISO-8601 last-mutation instant. */
@@ -121,6 +127,21 @@ export interface WorkspaceInsertSessionBeforeRequest {
   readonly workspaceId: WorkspaceId
   readonly sessionId: SessionId
   readonly beforeSessionId?: SessionId
+}
+
+/** Session requested to change Workspace, or to leave every Workspace. */
+export interface WorkspaceMoveSessionRequest {
+  readonly sessionId: SessionId
+  /** Destination Workspace; omitted leaves the Session Ungrouped. */
+  readonly workspaceId?: WorkspaceId
+}
+
+/** Outcome of one Session move: the target's complete row and the previous owner, each present only when there is one. */
+export interface WorkspaceMoveSessionValue {
+  /** The destination Workspace after the move; absent when the Session was moved to Ungrouped. */
+  readonly workspace?: WorkspaceView
+  /** The Workspace that accounted the Session before the move; absent when it was Ungrouped. */
+  readonly previousWorkspaceId?: WorkspaceId
 }
 
 /** Session requested for archival from Workspace grouping surfaces. */

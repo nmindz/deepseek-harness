@@ -31,6 +31,7 @@ interface WorkspaceView {
   readonly path: string
   readonly title: string
   sessionIds: string[]
+  readonly assignedSessionIds: string[]
   readonly createdAt: string
   updatedAt: string
 }
@@ -244,6 +245,7 @@ export function createAssembledRemote(options: AssembledRemoteOptions = {}): Ass
       path,
       title: path.split('/').filter(Boolean).at(-1) ?? path,
       sessionIds: [],
+      assignedSessionIds: [],
       createdAt: now,
       updatedAt: now,
     }
