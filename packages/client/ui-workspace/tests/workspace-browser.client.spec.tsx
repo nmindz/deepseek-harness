@@ -70,11 +70,12 @@ const workspaceState = (
   items: readonly WorkspaceView[],
   archivedSessionIds: readonly SessionId[] = [],
   pinnedSessionIds: readonly SessionId[] = [],
+  archivedWorkspaceIds: readonly WorkspaceId[] = [],
 ): WorkspaceSnapshot => ({
   items,
   archivedSessionIds,
   pinnedSessionIds,
-  archivedWorkspaceIds: [],
+  archivedWorkspaceIds,
   state: 'idle',
   phase: 'ready',
   error: null,
@@ -132,6 +133,8 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}) {
     notifyArchivedNotOpenable: vi.fn(),
     renameWorkspace: vi.fn(async () => {}),
     deleteWorkspace: vi.fn(async () => {}),
+    archiveWorkspace: vi.fn(),
+    unarchiveWorkspace: vi.fn(),
     unarchiveSession: vi.fn(async () => {}),
     insertWorkspaceBefore: vi.fn(async () => {}),
     createWorkspace: vi.fn(async () => workspace('created', [])),
@@ -1184,7 +1187,7 @@ describe('WorkspaceBrowser', () => {
     fireEvent.click(screen.getByText('alpha'))
     fireEvent.click(screen.getByText('gone'))
     expect(open).not.toHaveBeenCalled()
-    expect(notifyArchivedNotOpenable).toHaveBeenCalledOnce()
+    expect(notifyArchivedNotOpenable).toHaveBeenCalledExactlyOnceWith('session')
     expect(screen.getByText('gone').closest('[role="treeitem"]')?.getAttribute('aria-description'))
       .toBe('已归档对话暂时无法查看，请取消归档后查看')
   })
@@ -1206,9 +1209,110 @@ describe('WorkspaceBrowser', () => {
     const row = within(screen.getByRole('tree', { name: '搜索结果' })).getByRole('treeitem')
     fireEvent.click(row)
     expect(open).not.toHaveBeenCalled()
-    expect(notifyArchivedNotOpenable).toHaveBeenCalledOnce()
+    expect(notifyArchivedNotOpenable).toHaveBeenCalledExactlyOnceWith('session')
     expect(row.getAttribute('aria-description')).toBe('已归档对话暂时无法查看，请取消归档后查看')
     expect((input as HTMLInputElement).value).toBe('gone')
+  })
+
+  describe('archived Workspaces', () => {
+    const shelved = () => workspaceState(
+      [workspace('live', ['kept']), workspace('shelved', ['stored'])], [], [], [wid('shelved')],
+    )
+    const titles = () => screen.getAllByRole('treeitem').map(row => row.querySelector('[class*="title"]')?.textContent)
+
+    it('hides an archived group by default, shows it dimmed in its slot, and lists it whole under Archived only', () => {
+      const b = mount({
+        useSessions: hook(sessionState([summary('kept', 2), summary('stored', 1)])),
+        useWorkspaces: hook(shelved()),
+      })
+      fireEvent.click(screen.getByText('live'))
+      expect(titles()).toEqual(['live', 'kept'])
+      act(() => { b.store.actions.setArchivedFilter('show') })
+      fireEvent.click(screen.getByText('shelved'))
+      expect(titles()).toEqual(['live', 'kept', 'shelved', 'stored'])
+      const group = screen.getByText('shelved').closest('[role="treeitem"]') as HTMLElement
+      expect(group.className).toMatch(/archived/)
+      expect(screen.getByText('stored').closest('[role="treeitem"]')?.className).toMatch(/archived/)
+      expect(within(group).queryByRole('button', { name: '在“shelved”中新建会话' })).toBeNull()
+      expect(screen.getByRole('button', { name: '在“live”中新建会话' })).toBeTruthy()
+      act(() => { b.store.actions.setArchivedFilter('only') })
+      expect(titles()).toEqual(['shelved', 'stored'])
+    })
+
+    it('archives and unarchives a Workspace from its row menu', () => {
+      const b = mount({
+        useSessions: hook(sessionState([summary('kept', 2), summary('stored', 1)])),
+        useWorkspaces: hook(shelved()),
+      })
+      fireEvent.click(screen.getByRole('button', { name: '工作区“live”的操作' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: '归档工作区' }))
+      expect(b.props.archiveWorkspace).toHaveBeenCalledExactlyOnceWith(wid('live'))
+      act(() => { b.store.actions.setArchivedFilter('show') })
+      fireEvent.click(screen.getByRole('button', { name: '工作区“shelved”的操作' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: '取消归档工作区' }))
+      expect(b.props.unarchiveWorkspace).toHaveBeenCalledExactlyOnceWith(wid('shelved'))
+    })
+
+    it('refuses to open a Session archived through its Workspace, naming the Workspace in the notice', async () => {
+      const open = vi.fn()
+      const notifyArchivedNotOpenable = vi.fn()
+      const b = mount({
+        useSessions: hook(sessionState([summary('kept', 2), summary('stored', 1)])),
+        useWorkspaces: hook(shelved()),
+        open,
+        notifyArchivedNotOpenable,
+      })
+      act(() => { b.store.actions.setArchivedFilter('show') })
+      fireEvent.click(screen.getByText('shelved'))
+      fireEvent.click(screen.getByText('stored'))
+      expect(open).not.toHaveBeenCalled()
+      expect(notifyArchivedNotOpenable).toHaveBeenCalledExactlyOnceWith('workspace')
+      // The same refusal guards a search result of that Workspace.
+      fireEvent.click(screen.getByRole('button', { name: '搜索会话' }))
+      fireEvent.change(screen.getByPlaceholderText('搜索会话名称'), { target: { value: 'stored' } })
+      await act(async () => { await Promise.resolve() })
+      fireEvent.click(within(screen.getByRole('tree', { name: '搜索结果' })).getByRole('treeitem'))
+      expect(open).not.toHaveBeenCalled()
+      expect(notifyArchivedNotOpenable).toHaveBeenLastCalledWith('workspace')
+      expect(notifyArchivedNotOpenable).toHaveBeenCalledTimes(2)
+    })
+
+    it('applies the Workspace archive to the flat list', () => {
+      const preferences = createWorkspaceViewStore().create()
+      preferences.actions.setGroupBy('flat')
+      const b = mount({
+        useSessions: hook(sessionState([summary('kept', 2), summary('stored', 1)])),
+        useWorkspaces: hook(shelved()),
+      })
+      expect(titles()).toEqual(['kept'])
+      act(() => { b.store.actions.setArchivedFilter('show') })
+      expect(titles()).toEqual(['kept', 'stored'])
+      expect(screen.getByText('stored').closest('[role="treeitem"]')?.className).toMatch(/archived/)
+    })
+
+    it('keeps an archived Workspace row draggable in Manual order', () => {
+      const insertWorkspaceBefore = vi.fn(async () => {})
+      const b = mount({
+        useSessions: hook(sessionState([summary('kept', 2), summary('stored', 1)])),
+        useWorkspaces: hook(workspaceState(
+          [workspace('live', ['kept']), workspace('shelved', ['stored']), workspace('tail', [])], [], [], [wid('shelved')],
+        )),
+        insertWorkspaceBefore,
+      })
+      act(() => { b.store.actions.setArchivedFilter('show') })
+      const source = screen.getByText('shelved').closest('[role="treeitem"]') as HTMLElement
+      expect(source.getAttribute('draggable')).toBe('true')
+      let targetSection = screen.getByText('live').closest('[role="treeitem"]')?.parentElement as HTMLElement
+      while (targetSection.parentElement?.getAttribute('role') !== 'tree') {
+        targetSection = targetSection.parentElement as HTMLElement
+      }
+      targetSection.getBoundingClientRect = () => ({
+        top: 100, bottom: 134, left: 0, right: 200, width: 200, height: 34, x: 0, y: 100, toJSON: () => ({}),
+      })
+      fireEvent.dragStart(source, { dataTransfer: dragData() })
+      fireDrag(targetSection, 'drop', 105)
+      expect(insertWorkspaceBefore).toHaveBeenCalledWith(wid('shelved'), wid('live'))
+    })
   })
 
   it('offers unarchive on archived search results only', async () => {

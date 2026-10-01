@@ -14,28 +14,34 @@ import type { RowToastProps, RowToastState } from '../contract/slots.ts'
 const LONG_TOAST_HOLD_MS = 6000
 
 /**
- * Render the current notice: the archived and stopped-and-archived notices
- * with their undo action — plus the show-archived action while archived rows
- * are hidden — on a 6 s hold, a refused Session creation with the Host's
- * reason on the same hold, or a plain warning for a failed pin, an archived
- * row that was clicked, or default Workspace creation.
- * @param props - the notice hook, the shared viewing store, the notice dismissal, the two archived-notice actions, and the locale seat.
+ * Render the current notice: the Session and Workspace archived and
+ * stopped-and-archived notices with their undo action — plus the
+ * show-archived action while archived rows are hidden — on a 6 s hold, a
+ * refused Session creation with the Host's reason on the same hold, or a
+ * plain warning for a failed pin, an archived row that was clicked, or
+ * default Workspace creation.
+ * @param props - the notice hook, the shared viewing store, the notice dismissal, the archived-notice actions, and the locale seat.
  * @returns the notice on display, or null.
  */
-export function RowActionToast({ useToast, useStore, dismissToast, undoArchive, showArchived, t }: RowToastProps) {
+export function RowActionToast({
+  useToast, useStore, dismissToast, undoArchive, undoWorkspaceArchive, showArchived, t,
+}: RowToastProps) {
   const toast = useToast(current => current)
   const archivedRowsVisible = useStore(state => (state.archivedFilter ?? 'default') !== 'default')
   if (toast === null) return null
-  if (toast.kind === 'archived' || toast.kind === 'stoppedAndArchived') {
-    const { sessionId } = toast
+  if (isArchivedNotice(toast)) {
+    // A Session notice undoes through the Session, a Workspace notice through the Workspace.
+    const undo = 'sessionId' in toast
+      ? () => { undoArchive(toast.sessionId) }
+      : () => { undoWorkspaceArchive(toast.workspaceId) }
     return (
       <Toast
         key={`toast-${String(toast.seq)}`}
-        text={t(toast.kind === 'archived' ? 'toast.archived' : 'toast.stoppedAndArchived')}
+        text={t(`toast.${toast.kind}`)}
         tone="success"
         holdMs={LONG_TOAST_HOLD_MS}
         actions={[
-          { label: t('toast.archivedUndo'), onClick: () => { dismissToast(); undoArchive(sessionId) } },
+          { label: t('toast.archivedUndo'), onClick: () => { dismissToast(); undo() } },
           ...archivedRowsVisible ? [] : [
             { prefix: t('toast.archivedOr'), label: t('toast.archivedFilter'), onClick: () => { dismissToast(); showArchived() } },
           ],
@@ -65,9 +71,21 @@ export function RowActionToast({ useToast, useStore, dismissToast, undoArchive, 
   )
 }
 
+/** The notice kinds that succeed an archive and offer to undo it. */
+type ArchivedNoticeKind = 'archived' | 'stoppedAndArchived' | 'workspaceArchived' | 'workspaceStoppedAndArchived'
+type ArchivedNotice = Extract<RowToastState, { kind: ArchivedNoticeKind }>
+
+const ARCHIVED_NOTICE_KINDS: ReadonlySet<RowToastState['kind']> = new Set<ArchivedNoticeKind>([
+  'archived', 'stoppedAndArchived', 'workspaceArchived', 'workspaceStoppedAndArchived',
+])
+
+function isArchivedNotice(toast: RowToastState): toast is ArchivedNotice {
+  return ARCHIVED_NOTICE_KINDS.has(toast.kind)
+}
+
 /** The copy of one plain warning, keyed by the notice kind the union closes over. */
 function plainNoticeText(
-  toast: Exclude<RowToastState, { kind: 'archived' | 'stoppedAndArchived' | 'createFailed' }>,
+  toast: Exclude<RowToastState, ArchivedNotice | { kind: 'createFailed' }>,
   t: RowToastProps['t'],
 ): string {
   switch (toast.kind) {
@@ -75,6 +93,7 @@ function plainNoticeText(
     case 'unpinFailed': return t('toast.unpinFailed')
     case 'defaultWorkspaceFailed': return t('defaultWorkspace.failed')
     case 'archivedNotOpenable': return t('toast.archivedNotOpenable')
+    case 'workspaceArchivedNotOpenable': return t('toast.workspaceArchivedNotOpenable')
     /* v8 ignore next 2 -- closed-union backstop; only reached if a notice kind is forged */
     default:
       return assertNever(toast)

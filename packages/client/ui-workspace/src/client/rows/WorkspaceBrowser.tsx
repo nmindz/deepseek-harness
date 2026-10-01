@@ -39,7 +39,7 @@ import type {
 import {
   applyDirection, deriveFlat, deriveGroups, deriveSearchResults, ORDER_DIRECTION_DEFAULTS, orderByRecency,
   orderByTitle, orderWorkspacesByRecency, orderWorkspacesByTitle, owningGroupKey, owningParentFolder,
-  pinCurrentBlank, reconcileManualOrder, sessionMemberIds, UNGROUPED_KEY,
+  pinCurrentBlank, reconcileManualOrder, sessionArchivedBy, sessionMemberIds, UNGROUPED_KEY,
 } from '../tree.ts'
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './Rows.tsx'
 import { AnimatedRows } from './AnimatedRows.tsx'
@@ -280,7 +280,7 @@ function workspaceGroupHalf(e: { clientY: number; currentTarget: HTMLElement }):
 type SessionTreeProps = Pick<
   WorkspaceBrowserProps,
   'useSessionStatus' | 'startSession' | 'open'
-  | 'insertWorkspaceBefore' | 't' | 'usePanelInfo'
+  | 'insertWorkspaceBefore' | 'archiveWorkspace' | 'unarchiveWorkspace' | 't' | 'usePanelInfo'
 > & PropsRenderSlots<
   | 'sidebar.workspaces.session.menu.item'
   | 'sidebar.workspaces.session.row.action'
@@ -349,7 +349,7 @@ function SessionTree({
   workspaceReady, animationResetKey, usePanelInfo,
   onRenameRequest, onDeleteRequest, onSessionRenameRequest,
   renderSlot,
-  insertWorkspaceBefore,
+  insertWorkspaceBefore, archiveWorkspace, unarchiveWorkspace,
   nestWorkspaces, workspaceDragEnabled, groupExpansion, setGroupExpanded,
   setSessionOrder, home, t,
   revealSessionId, onSessionRevealed, shortcuts,
@@ -584,6 +584,14 @@ function SessionTree({
               /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
                 if (group.workspaceId !== undefined) onRenameRequest(group.workspaceId, group.label)
               },
+              archive: () => {
+              /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
+                if (group.workspaceId !== undefined) archiveWorkspace(group.workspaceId)
+              },
+              unarchive: () => {
+              /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
+                if (group.workspaceId !== undefined) unarchiveWorkspace(group.workspaceId)
+              },
               delete: () => {
               /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
                 if (group.workspaceId !== undefined) onDeleteRequest(group.workspaceId, group.label)
@@ -692,7 +700,7 @@ function SessionTree({
 
 /** The flat "In one list" body: every session is one draggable top-level row. */
 function FlatList({
-  list, sessionIds, rowState, onLeaveArchivedOnly, useSessionStatus, open, onSessionRenameRequest,
+  list, sessionIds, workspaces, rowState, onLeaveArchivedOnly, useSessionStatus, open, onSessionRenameRequest,
   usePanelInfo, setSessionOrder, workspaceReady, animationResetKey,
   revealSessionId, onSessionRevealed, renderSlot, t,
 }: Pick<
@@ -713,12 +721,14 @@ function FlatList({
 > & {
   list: SessionListState
   sessionIds: readonly SessionId[]
+  /** Workspace membership: an archived Workspace archives every row it accounts. */
+  workspaces: readonly WorkspaceView[]
 }) {
   const panelActive = usePanelInfo(info => info.activePanelId !== null)
   const statuses = useSessionStatus(s => s)
   const rows = useMemo(
-    () => deriveFlat(list, sessionIds, rowState, statuses),
-    [list, sessionIds, rowState, statuses],
+    () => deriveFlat(list, sessionIds, workspaces, rowState, statuses),
+    [list, sessionIds, workspaces, rowState, statuses],
   )
   const [drag, setDrag] = useState<DragState | null>(null)
   const dropCommitted = useRef(false)
@@ -807,8 +817,7 @@ function SearchResults({
   open,
   onUnarchive,
   workspaces,
-  archivedSessionIds,
-  archivedFilter,
+  rowState,
   query,
   remote,
   resultLimit,
@@ -816,9 +825,8 @@ function SearchResults({
   t,
 }: Pick<WorkspaceBrowserProps, 'useSessions' | 'useSessionStatus' | 'open' | 't' | 'usePanelInfo'> & {
   workspaces: readonly WorkspaceView[]
-  archivedSessionIds: readonly SessionNode['id'][]
-  /** Search matches follow the archived filter selected for the list. */
-  archivedFilter: ArchivedFilter
+  /** The archive sets and the archived filter selected for the list; search matches follow them. */
+  rowState: SessionRowState
   /** Unarchive an archived result row in place. */
   onUnarchive: (id: SessionNode['id']) => void
   query: string
@@ -832,17 +840,8 @@ function SearchResults({
     ? remote
     : { query, status: 'loading' as const, items: [], hasMore: false }
   const results = useMemo(
-    () => deriveSearchResults(
-      list,
-      workspaces,
-      query,
-      archivedSessionIds,
-      archivedFilter,
-      statuses,
-      currentRemote,
-      resultLimit,
-    ),
-    [list, workspaces, query, archivedSessionIds, archivedFilter, statuses, currentRemote, resultLimit],
+    () => deriveSearchResults(list, workspaces, query, rowState, statuses, currentRemote, resultLimit),
+    [list, workspaces, query, rowState, statuses, currentRemote, resultLimit],
   )
   const pending = currentRemote.status === 'loading'
   const currentId = panelActive
@@ -913,6 +912,8 @@ export function WorkspaceBrowser({
   notifyArchivedNotOpenable,
   renameWorkspace,
   deleteWorkspace,
+  archiveWorkspace,
+  unarchiveWorkspace,
   insertWorkspaceBefore,
   unarchiveSession,
   createWorkspace,
@@ -951,6 +952,7 @@ export function WorkspaceBrowser({
   const workspacePhase = useWorkspaces(state => state.phase)
   const workspaceStreamState = useWorkspaces(state => state.state)
   const archivedSessionIds = useWorkspaces(state => state.archivedSessionIds)
+  const archivedWorkspaceIds = useWorkspaces(state => state.archivedWorkspaceIds)
   const pinnedSessionIds = useWorkspaces(state => state.pinnedSessionIds)
   // Live occupancy of this surface's directory-flow hole (the same source the
   // flow reads): a composition without a picking affordance can add nothing.
@@ -967,13 +969,25 @@ export function WorkspaceBrowser({
   const archivedFilter = useStore(s => s.archivedFilter ?? 'default')
   const groupExpansion = useStore(s => s.groupExpansion)
   const sessionOrderByAccount = useStore(s => s.sessionOrderByAccount)
+  const orderState = useMemo(
+    () => ({ pinnedSessionIds, archivedSessionIds }),
+    [archivedSessionIds, pinnedSessionIds],
+  )
+  const rowState = useMemo<SessionRowState>(
+    () => ({ ...orderState, archivedWorkspaceIds, archivedFilter }),
+    [orderState, archivedWorkspaceIds, archivedFilter],
+  )
   // Archived sessions are not openable: the row stays visible under the
-  // filter but a click explains instead of navigating.
+  // filter but a click explains instead of navigating, naming what to
+  // restore — the Session or the Workspace archiving it.
+  const refuseArchived = (sessionId: SessionId): boolean => {
+    const archivedBy = sessionArchivedBy(workspaces, rowState, sessionId)
+    if (archivedBy === undefined) return false
+    notifyArchivedNotOpenable(archivedBy)
+    return true
+  }
   const guardedOpen = (sessionId: SessionId): void => {
-    if (archivedSessionIds.includes(sessionId)) {
-      notifyArchivedNotOpenable()
-      return
-    }
+    if (refuseArchived(sessionId)) return
     open(sessionId)
   }
   const leaveArchivedOnly = (): void => { actions.setArchivedFilter('default') }
@@ -987,14 +1001,6 @@ export function WorkspaceBrowser({
     const accounted = new Set(workspaces.flatMap(workspace => workspace.sessionIds))
     return list.ids.filter(id => list.byId[id] !== undefined && !accounted.has(id))
   }, [list, workspaces])
-  const orderState = useMemo(
-    () => ({ pinnedSessionIds, archivedSessionIds }),
-    [archivedSessionIds, pinnedSessionIds],
-  )
-  const rowState = useMemo<SessionRowState>(
-    () => ({ ...orderState, archivedFilter }),
-    [orderState, archivedFilter],
-  )
   const flatMemberIds = useMemo(() => sessionMemberIds(list), [list])
   // One account's complete display order: the selected mode and direction
   // decide the base order, and the selected blank Session keeps its first slot.
@@ -1097,10 +1103,7 @@ export function WorkspaceBrowser({
   const composingRef = useRef(false)
 
   const openSearchResult = (sessionId: SessionId): void => {
-    if (archivedSessionIds.includes(sessionId)) {
-      notifyArchivedNotOpenable()
-      return
-    }
+    if (refuseArchived(sessionId)) return
     setRevealSessionId(sessionId)
     setQuery('')
     setSearchExpanded(false)
@@ -1422,8 +1425,7 @@ export function WorkspaceBrowser({
               open={openSearchResult}
               onUnarchive={onSessionUnarchive}
               workspaces={workspaces}
-              archivedSessionIds={archivedSessionIds}
-              archivedFilter={archivedFilter}
+              rowState={rowState}
               query={normalizedQuery}
               remote={remoteSearch}
               resultLimit={searchResultLimit}
@@ -1436,6 +1438,7 @@ export function WorkspaceBrowser({
                 usePanelInfo={usePanelInfo}
                 list={list}
                 sessionIds={orderedFlatSessionIds}
+                workspaces={workspaces}
                 rowState={rowState}
                 onLeaveArchivedOnly={leaveArchivedOnly}
                 workspaceReady={workspaceReady}
@@ -1472,6 +1475,8 @@ export function WorkspaceBrowser({
                 startSession={startSession}
                 open={guardedOpen}
                 insertWorkspaceBefore={insertWorkspaceBefore}
+                archiveWorkspace={archiveWorkspace}
+                unarchiveWorkspace={unarchiveWorkspace}
                 revealSessionId={revealSessionId}
                 onSessionRevealed={acknowledgeSessionReveal}
                 home={home}

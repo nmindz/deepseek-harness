@@ -56,7 +56,7 @@ export interface SessionNode {
   completed: boolean
   /** In the registry-global pin set: leads its section, reorderable only among pinned rows. */
   pinned: boolean
-  /** In the registry-global archive set: shown grayed in place and not openable. */
+  /** Archived itself or through its Workspace: shown grayed in place and not openable. */
   archived: boolean
   updatedAt: number
 }
@@ -88,6 +88,8 @@ export interface GroupNode {
   expanded: boolean
   /** The group contains the selected session (active folder tint; supplied here so the renderer never scans). */
   containsCurrent: boolean
+  /** In the registry-global archived Workspace set; every accounted session is archived through it. Never true for Ungrouped. */
+  archived: boolean
   /** Visible session rows (empty while the group is folded). */
   sessions: readonly SessionNode[]
 }
@@ -104,7 +106,7 @@ export interface SearchResultNode {
   runningSubagentCount: number
   /** Finished running while not selected and not yet opened (the green "done" reminder dot). */
   completed: boolean
-  /** In the registry-global archive set: shown grayed and not openable. */
+  /** Archived itself or through its Workspace: shown grayed and not openable. */
   archived: boolean
   snippet?: string
 }
@@ -128,6 +130,7 @@ interface Group {
   cwd: string | undefined
   createdAt: number | undefined
   label: string
+  archived: boolean
   sessions: SessionSummary[]
 }
 
@@ -337,8 +340,9 @@ export type ArchivedFilter = 'default' | 'show' | 'only'
 /**
  * Ordinary sessions are visible; among blank sessions, only the current one
  * is visible. Subagent children use their parent header catalog; archived
- * sessions follow the archived filter, while their accounting slots remain
- * either way so unarchiving restores position.
+ * sessions (themselves or through their Workspace) follow the archived
+ * filter, while their accounting slots remain either way so unarchiving
+ * restores position.
  */
 function sessionVisible(
   session: SessionSummary,
@@ -367,8 +371,68 @@ export interface SessionRowState {
   pinnedSessionIds: readonly SessionId[]
   /** Archive set; members keep their slots and show grayed while visible. */
   archivedSessionIds: readonly SessionId[]
+  /** Archived Workspace set; every accounted session is archived through it while its own flags stay untouched. */
+  archivedWorkspaceIds: readonly WorkspaceId[]
   /** Archived-row visibility choice applied to lists and search alike. */
   archivedFilter: ArchivedFilter
+}
+
+/** The two archive sets a derivation folds into one effective session set. */
+export type ArchiveRowState = Pick<SessionRowState, 'archivedSessionIds' | 'archivedWorkspaceIds'>
+
+/**
+ * Sessions archived through their Workspace: every accounted member of an
+ * archived Workspace.
+ * @param workspaces - authoritative Workspace membership.
+ * @param archivedWorkspaceIds - registry-global archived Workspace set.
+ * @returns the accounted Session ids of every archived Workspace.
+ */
+export function workspaceArchivedSessionIds(
+  workspaces: readonly WorkspaceView[],
+  archivedWorkspaceIds: readonly WorkspaceId[],
+): Set<SessionId> {
+  const archived = new Set<SessionId>()
+  if (archivedWorkspaceIds.length === 0) return archived
+  const archivedWorkspaces = new Set(archivedWorkspaceIds)
+  for (const workspace of workspaces) {
+    if (!archivedWorkspaces.has(workspace.workspaceId)) continue
+    for (const id of workspace.sessionIds) archived.add(id)
+  }
+  return archived
+}
+
+/**
+ * Effectively archived sessions: the archive set plus every member of an
+ * archived Workspace. Every derivation and the row actions read this one set.
+ * @param workspaces - authoritative Workspace membership.
+ * @param rowState - the two registry-global archive sets.
+ * @returns the union as a Set.
+ */
+export function effectiveArchivedSessionIds(
+  workspaces: readonly WorkspaceView[],
+  rowState: ArchiveRowState,
+): Set<SessionId> {
+  const archived = workspaceArchivedSessionIds(workspaces, rowState.archivedWorkspaceIds)
+  for (const id of rowState.archivedSessionIds) archived.add(id)
+  return archived
+}
+
+/**
+ * Why one session is archived, when it is: by its own archive flag first,
+ * otherwise through its archived Workspace.
+ * @param workspaces - authoritative Workspace membership.
+ * @param rowState - the two registry-global archive sets.
+ * @param sessionId - Session to classify.
+ * @returns `'session'`, `'workspace'`, or undefined for an unarchived Session.
+ */
+export function sessionArchivedBy(
+  workspaces: readonly WorkspaceView[],
+  rowState: ArchiveRowState,
+  sessionId: SessionId,
+): 'session' | 'workspace' | undefined {
+  if (rowState.archivedSessionIds.includes(sessionId)) return 'session'
+  const owner = workspaces.find(workspace => workspace.sessionIds.includes(sessionId))
+  return owner !== undefined && rowState.archivedWorkspaceIds.includes(owner.workspaceId) ? 'workspace' : undefined
 }
 
 /**
@@ -408,9 +472,10 @@ function buildGroup(
   cwd: string | undefined,
   createdAt: number | undefined,
   label: string,
+  archived: boolean,
   members: readonly SessionSummary[],
 ): Group {
-  return { key, workspaceId, cwd, createdAt, label, sessions: [...members] }
+  return { key, workspaceId, cwd, createdAt, label, archived, sessions: [...members] }
 }
 
 /** Apply a stored Ungrouped order and append newly loose Sessions by recency. */
@@ -432,14 +497,16 @@ function orderedUngrouped(
 
 /**
  * Group Sessions by Workspace: one group per caller-ordered entity, with
- * members resolved from caller-ordered sessionIds. Sessions outside every
- * Workspace trail in the browser-local Ungrouped order, which falls back to
- * recency before that order is initialized.
+ * members resolved from caller-ordered sessionIds. An archived Workspace
+ * follows the archived filter as a whole: hidden by default, shown in its
+ * slot otherwise. Sessions outside every Workspace trail in the browser-local
+ * Ungrouped order, which falls back to recency before that order is initialized.
  */
 function groupByWorkspace(
   list: SessionListState,
   workspaces: readonly WorkspaceView[],
   archived: ReadonlySet<SessionId>,
+  archivedWorkspaces: ReadonlySet<WorkspaceId>,
   archivedFilter: ArchivedFilter,
   ungroupedOrder: readonly string[] | undefined,
 ): Group[] {
@@ -447,6 +514,7 @@ function groupByWorkspace(
   const groups: Group[] = []
   const accounted = new Set<SessionId>()
   for (const workspace of workspaces) {
+    const workspaceArchived = archivedWorkspaces.has(workspace.workspaceId)
     const members: SessionSummary[] = []
     for (const id of workspace.sessionIds) {
       const summary = list.byId[id]
@@ -455,12 +523,15 @@ function groupByWorkspace(
       if (!sessionVisible(summary, current, archived, archivedFilter)) continue
       members.push(summary)
     }
+    // An archived Workspace hides with its Sessions under the default filter.
+    if (archivedFilter === 'default' && workspaceArchived) continue
     // The archived-only view lists archives, not the Workspace inventory, so
-    // a Workspace without archived Sessions contributes no group.
-    if (archivedFilter === 'only' && members.length === 0) continue
+    // an unarchived Workspace without archived Sessions contributes no group;
+    // an archived Workspace is itself the archive and stays listed.
+    if (archivedFilter === 'only' && members.length === 0 && !workspaceArchived) continue
     groups.push(buildGroup(
       workspace.workspaceId, workspace.workspaceId, workspace.path,
-      Date.parse(workspace.createdAt), workspace.title, members,
+      Date.parse(workspace.createdAt), workspace.title, workspaceArchived, members,
     ))
   }
   const stray = list.ids
@@ -474,6 +545,7 @@ function groupByWorkspace(
       undefined,
       undefined,
       '',
+      false,
       orderedUngrouped(stray, ungroupedOrder, list.byId),
     ))
   }
@@ -525,12 +597,13 @@ function sessionNode(
 /**
  * Derive the workspace browser groups with every session as a top-level row.
  *
- * Every group shows, except that the archived-only filter drops groups
- * without visible members; sessions populate under expanded groups with
- * pinned rows leading in the selected local order. Blank sessions are
- * excluded except for the selected provisional New Session row; archived
- * sessions keep their slots and appear per the archived filter. Content
- * search lives outside this derivation (see {@link deriveSearchResults}).
+ * Every unarchived group shows, except that the archived-only filter drops
+ * groups without visible members; an archived group follows the filter as a
+ * whole. Sessions populate under expanded groups with pinned rows leading in
+ * the selected local order. Blank sessions are excluded except for the
+ * selected provisional New Session row; archived sessions keep their slots
+ * and appear per the archived filter. Content search lives outside this
+ * derivation (see {@link deriveSearchResults}).
  * @param list - sessions list snapshot (`mainView` retention feeds containsCurrent).
  * @param workspaces - real Workspaces in Host group order with caller-projected Session order.
  * @param rowState - registry-global pin and archive sets plus the archived filter.
@@ -545,7 +618,8 @@ export function deriveGroups(
   statuses: SessionStatuses,
   view: TreeView,
 ): GroupNode[] {
-  const archived = new Set(rowState.archivedSessionIds)
+  const archived = effectiveArchivedSessionIds(workspaces, rowState)
+  const archivedWorkspaces = new Set(rowState.archivedWorkspaceIds)
   const pinned = new Set(rowState.pinnedSessionIds)
   const expandedGroups = new Set(view.expandedGroups)
   const current = mainSessionId(list)
@@ -553,7 +627,7 @@ export function deriveGroups(
     ? undefined
     : owningGroupKey(workspaces, current)
   const groups: GroupNode[] = []
-  for (const g of groupByWorkspace(list, workspaces, archived, rowState.archivedFilter, view.ungroupedOrder)) {
+  for (const g of groupByWorkspace(list, workspaces, archived, archivedWorkspaces, rowState.archivedFilter, view.ungroupedOrder)) {
     const expanded = expandedGroups.has(g.key)
     groups.push({
       key: g.key,
@@ -564,6 +638,7 @@ export function deriveGroups(
       sessionCount: g.sessions.length,
       expanded,
       containsCurrent: g.key === currentGroup,
+      archived: g.archived,
       sessions: expanded
         ? sectionMembers(g.sessions, pinned, archived)
           .map(session => sessionNode(session, list, statuses, pinned, archived))
@@ -573,32 +648,38 @@ export function deriveGroups(
   return groups
 }
 
+/** Archive facts one visibility or search derivation reads. */
+type ArchiveFilterState = ArchiveRowState & Pick<SessionRowState, 'archivedFilter'>
+
+/** The row state of a view that shows every archive: membership selection ignores the sets. */
+const SHOW_ALL: ArchiveFilterState = { archivedSessionIds: [], archivedWorkspaceIds: [], archivedFilter: 'show' }
+
 /**
  * Select complete flat-list membership, independently of archive visibility.
  * @param list - sessions list snapshot.
  * @returns known ordinary Session ids, including archives and only the current blank.
  */
 export function sessionMemberIds(list: SessionListState): SessionId[] {
-  return visibleSessionIds(list, [], 'show')
+  return visibleSessionIds(list, [], SHOW_ALL)
 }
 
 /**
  * Select visible flat-list members without deriving row presentation or ordering.
  * @param list - sessions list snapshot.
- * @param archivedSessionIds - registry-global archive set.
- * @param archivedFilter - archived-row visibility choice.
+ * @param workspaces - authoritative Workspace membership (archived Workspaces archive their members).
+ * @param rowState - the two registry-global archive sets plus the archived-row visibility choice.
  * @returns known visible Session ids in list order, including ordinary forks and only the current blank.
  */
 export function visibleSessionIds(
   list: SessionListState,
-  archivedSessionIds: readonly SessionId[],
-  archivedFilter: ArchivedFilter,
+  workspaces: readonly WorkspaceView[],
+  rowState: ArchiveFilterState,
 ): SessionId[] {
-  const archived = new Set(archivedSessionIds)
+  const archived = effectiveArchivedSessionIds(workspaces, rowState)
   const current = mainSessionId(list)
   return list.ids.filter((id) => {
     const s = list.byId[id]
-    return s !== undefined && sessionVisible(s, current, archived, archivedFilter)
+    return s !== undefined && sessionVisible(s, current, archived, rowState.archivedFilter)
   })
 }
 
@@ -607,6 +688,7 @@ export function visibleSessionIds(
  * pinned rows fronted ahead of the supplied order.
  * @param list - sessions list snapshot used to select the ids.
  * @param sessionIds - complete account members in the selected order, including hidden archives.
+ * @param workspaces - authoritative Workspace membership (archived Workspaces archive their members).
  * @param rowState - registry-global pin and archive sets plus the archived filter.
  * @param statuses - unified UI status by Session.
  * @returns flat rows in sectioned order with current status indicators.
@@ -614,10 +696,11 @@ export function visibleSessionIds(
 export function deriveFlat(
   list: SessionListState,
   sessionIds: readonly SessionId[],
+  workspaces: readonly WorkspaceView[],
   rowState: SessionRowState,
   statuses: SessionStatuses,
 ): SessionNode[] {
-  const archived = new Set(rowState.archivedSessionIds)
+  const archived = effectiveArchivedSessionIds(workspaces, rowState)
   const pinned = new Set(rowState.pinnedSessionIds)
   const current = mainSessionId(list)
   const members = sessionIds.flatMap((id) => {
@@ -637,8 +720,7 @@ export function deriveFlat(
  * @param list - session metadata authority.
  * @param workspaces - Workspace membership and display labels.
  * @param query - caller text; surrounding whitespace is ignored.
- * @param archivedSessionIds - registry-global archive set (members match per the archived filter).
- * @param archivedFilter - archived-row visibility choice; search follows it.
+ * @param rowState - the two registry-global archive sets (members match per the archived filter) plus that filter.
  * @param statuses - unified UI status by Session.
  * @param content - ranked Host content-search page.
  * @param limit - protocol-owned maximum merged row count.
@@ -648,15 +730,15 @@ export function deriveSearchResults(
   list: SessionListState,
   workspaces: readonly WorkspaceView[],
   query: string,
-  archivedSessionIds: readonly SessionId[],
-  archivedFilter: ArchivedFilter,
+  rowState: ArchiveFilterState,
   statuses: SessionStatuses,
   content: { items: readonly SessionSearchResultItem[]; hasMore: boolean },
   limit: number,
 ): SearchResultSet {
   const q = query.trim().toLowerCase()
   if (q === '') return { items: [], hasMore: false }
-  const archived = new Set(archivedSessionIds)
+  const { archivedFilter } = rowState
+  const archived = effectiveArchivedSessionIds(workspaces, rowState)
   const current = mainSessionId(list)
 
   const workspaceBySession = new Map<SessionId, string>()

@@ -9,10 +9,11 @@ export type SessionLinkState = 'available' | 'loading' | 'archived' | 'unavailab
 /**
  * Check Host-list membership and archive state without activating or restoring anything.
  *
- * `SessionListState.byId` also carries local fallback rows for live Client
- * generations, so membership comes from `ids`, the Host-list projection: a
- * Session the Host list dropped reports unavailable even while a local row for
- * it survives.
+ * A Session is archived by its own archive flag or through the archived
+ * Workspace that accounts it. `SessionListState.byId` also carries local
+ * fallback rows for live Client generations, so membership comes from `ids`,
+ * the Host-list projection: a Session the Host list dropped reports
+ * unavailable even while a local row for it survives.
  * @param id - Original Session bound to the task.
  * @param sessions - Current Session list projection.
  * @param workspaces - Current Workspace and archive projection.
@@ -21,9 +22,16 @@ export type SessionLinkState = 'available' | 'loading' | 'archived' | 'unavailab
 export function sessionLinkState(id: SessionId, sessions: SessionListState, workspaces: WorkspaceSnapshot): SessionLinkState {
   if (workspaces.state === 'error') return 'unavailable'
   if (sessions.phase === 'pending' || workspaces.phase === 'pending') return 'loading'
-  if (workspaces.archivedSessionIds.includes(id)) return 'archived'
+  if (workspaces.archivedSessionIds.includes(id) || archivedThroughWorkspace(id, workspaces)) return 'archived'
   if (!sessions.ids.includes(id)) return 'unavailable'
   return 'available'
+}
+
+/** Whether the Workspace accounting `id` is in the archived Workspace set. */
+function archivedThroughWorkspace(id: SessionId, workspaces: WorkspaceSnapshot): boolean {
+  if (workspaces.archivedWorkspaceIds.length === 0) return false
+  const owner = workspaces.items.find(item => item.sessionIds.includes(id))
+  return owner !== undefined && workspaces.archivedWorkspaceIds.includes(owner.workspaceId)
 }
 
 /** Label one linked Session shows, and whether a Session title produced it. */

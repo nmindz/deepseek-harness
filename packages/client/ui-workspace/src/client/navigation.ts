@@ -21,6 +21,7 @@ import type { DraftInitializationOptions } from '@deepseek-ai/dsh-client-ui-conv
 import type { RowToast } from './contract/slots.ts'
 import { pinOrderAccounts, pinOrderSource } from './pin-order.ts'
 import type { WorkspaceViewStoreActions } from './stores.ts'
+import { sessionArchivedBy } from './tree.ts'
 
 interface MainSelection {
   readonly sessionId?: SessionId
@@ -237,7 +238,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       ? undefined
       : workspace.items.find(item => item.sessionIds.includes(current))?.workspaceId
     const recent = workspace.phase === 'ready' && sessions.phase === 'ready'
-      ? recentWorkspace(workspace.items, sessions.byId)
+      ? recentWorkspace(workspace.items, sessions.byId, workspace.archivedWorkspaceIds)
       : undefined
     const target = workspaceId ?? currentWorkspaceId ?? recent
     if (target === undefined) {
@@ -358,12 +359,18 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       return
     }
     const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
+    // An archived Workspace neither reclaims its saved blank nor takes a new
+    // Session: the Host refuses both.
+    const openWorkspace = workspace !== undefined && !workspaces.archivedWorkspaceIds.includes(workspace.workspaceId)
+      ? workspace
+      : undefined
     let sessionId: SessionId | undefined
-    if (summary !== undefined && workspace !== undefined && summary.cwd === workspace.path
+    if (summary !== undefined && openWorkspace !== undefined && summary.cwd === openWorkspace.path
       && !workspaces.archivedSessionIds.includes(summary.id)) {
-      sessionId = await this.reuseBlank(workspace.workspaceId, summary.id)
+      sessionId = await this.reuseBlank(openWorkspace.workspaceId, summary.id)
     }
-    let target = workspace?.workspaceId ?? recentWorkspace(workspaces.items, sessions.byId)
+    let target = openWorkspace?.workspaceId
+      ?? recentWorkspace(workspaces.items, sessions.byId, workspaces.archivedWorkspaceIds)
     if (target === undefined && workspaces.items.length === 0 && sessions.ids.length === 0) {
       const prepared = await this.initializeDefaultWorkspace(navigation)
       if (navigation.aborted) return
@@ -384,11 +391,12 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     }
   }
 
-  /** @returns true when an archived current selection was cleared. */
+  /** @returns true when a current selection archived itself or through its Workspace was cleared. */
   private clearArchivedCurrent(): boolean {
     const current = this.mainReference?.sessionId
-    if (current === undefined
-      || !this.workspaces.list.getSnapshot().archivedSessionIds.includes(current)) return false
+    if (current === undefined) return false
+    const snapshot = this.workspaces.list.getSnapshot()
+    if (sessionArchivedBy(snapshot.items, snapshot, current) === undefined) return false
     this.clearMain()
     return true
   }
@@ -454,14 +462,16 @@ function creationFailureMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** Stable tie-breaking follows Host Workspace order. */
+/** Stable tie-breaking follows Host Workspace order; an archived Workspace is never recent. */
 function recentWorkspace(
   workspaces: readonly WorkspaceView[],
   sessions: SessionListState['byId'],
+  archivedWorkspaceIds: readonly WorkspaceId[],
 ): WorkspaceId | undefined {
   let selected: WorkspaceId | undefined
   let selectedTime = Number.NEGATIVE_INFINITY
   for (const workspace of workspaces) {
+    if (archivedWorkspaceIds.includes(workspace.workspaceId)) continue
     let latest = Number.NEGATIVE_INFINITY
     for (const sessionId of workspace.sessionIds) {
       const session = sessions[sessionId]

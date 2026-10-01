@@ -91,12 +91,13 @@ function workspaceState(
   items: WorkspaceSnapshot['items'] = [],
   archivedSessionIds: readonly SessionId[] = [],
   phase: WorkspaceSnapshot['phase'] = 'ready',
+  archivedWorkspaceIds: readonly WorkspaceId[] = [],
 ): WorkspaceSnapshot {
   return {
     items,
     archivedSessionIds,
     pinnedSessionIds: [],
-    archivedWorkspaceIds: [],
+    archivedWorkspaceIds,
     phase,
     state: phase === 'ready' ? 'idle' : 'loading',
     error: null,
@@ -1255,6 +1256,58 @@ describe('UiWorkspaceService', () => {
 
     expect(b.sessions.retained[0]!.release).toHaveBeenCalledOnce()
     expect(b.selectPanel).toHaveBeenCalledTimes(2)
+  })
+
+  it('clears a selected Session when its Workspace is archived, and leaves one in another Workspace', () => {
+    const b = bench()
+    b.uiWorkspace.openSession(sid('current'))
+    const items = [workspace('a', [sid('current')]), workspace('b', [sid('other')])]
+
+    b.workspaces.list.set(workspaceState(items, [], 'ready', [wid('b')]))
+    expect(b.sessions.retained[0]!.release).not.toHaveBeenCalled()
+
+    b.workspaces.list.set(workspaceState(items, [], 'ready', [wid('b'), wid('a')]))
+    expect(b.sessions.retained[0]!.release).toHaveBeenCalledOnce()
+    expect(b.selectPanel).toHaveBeenCalledTimes(2)
+  })
+
+  it('never treats an archived Workspace as the recent Workspace for a New Session', async () => {
+    const current = summary('current', { cwd: '/w/shelved', updatedAt: 5 })
+    const older = summary('older', { cwd: '/w/live', updatedAt: 1 })
+    const b = bench({
+      sessions: sessionState([current, older]),
+      workspaces: workspaceState([
+        workspace('shelved', [current.id]),
+        workspace('live', [older.id]),
+      ], [], 'ready', [wid('shelved')]),
+    })
+    b.uiWorkspace.startSession()
+    await vi.waitFor(() => {
+      expect(b.sessions.retain).toHaveBeenLastCalledWith(sid('created-live'), { source: 'mainView' })
+    })
+    // Only archived Workspaces leave nothing to open.
+    const onlyShelved = bench({
+      sessions: sessionState([current]),
+      workspaces: workspaceState([workspace('shelved', [current.id])], [], 'ready', [wid('shelved')]),
+    })
+    onlyShelved.uiWorkspace.startSession()
+    expect(onlyShelved.selectPanel).toHaveBeenCalledWith(null)
+    expect(onlyShelved.sessions.create).not.toHaveBeenCalled()
+  })
+
+  it('neither reclaims a saved blank in an archived Workspace nor opens that Workspace at startup', async () => {
+    persistSelection({ sessionId: sid('saved') })
+    const b = bench({
+      sessions: sessionState([summary('saved', { blank: true, cwd: '/w/shelved' })]),
+      workspaces: workspaceState([
+        workspace('shelved', [sid('saved')]),
+        workspace('live', []),
+      ], [], 'ready', [wid('shelved')]),
+    })
+    await vi.waitFor(() => {
+      expect(b.sessions.retain).toHaveBeenCalledExactlyOnceWith(sid('created-live'), { source: 'mainView' })
+    })
+    expect(b.sessions.create).toHaveBeenCalledExactlyOnceWith({ workspaceId: wid('live') })
   })
 
   it('clears a selected Session after archiving it without an intervening snapshot', async () => {

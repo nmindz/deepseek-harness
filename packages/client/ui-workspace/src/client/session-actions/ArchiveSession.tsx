@@ -2,17 +2,12 @@
  * The archive action: a `sidebar.workspaces.session.menu.item` row and a
  * `sidebar.workspaces.session.row.action` button over one injected behavior,
  * plus the `shell.overlay` dialog that confirms stopping a Session's running
- * work before archiving it. The same entries restore an archived row; the
- * notice a successful archive raises and the diagnostics for Host rejections
- * live in the injected callbacks, not here.
+ * work before archiving it. The same entries restore an archived row; a row
+ * archived through its Workspace gets neither, because only the Workspace
+ * restores it. The notice a successful archive raises and the diagnostics for
+ * Host rejections live in the injected callbacks, not here.
  */
 import { useState } from 'react'
-import type { SessionActivity } from '@deepseek-ai/dsh-api-workspace-controller/client'
-// Type-only: the family keys each provider merges; a key this program did not compile takes the generic line.
-import type {} from '@deepseek-ai/dsh-agent/types'
-import type {} from '@deepseek-ai/dsh-jobs/view'
-import type {} from '@deepseek-ai/dsh-schedule/client'
-import type {} from '@deepseek-ai/dsh-subagent/client'
 import {
   Button, IconArchiveOutlineRegular, IconUnarchiveOutlineRegular, MenuItemButton, Modal, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -22,18 +17,21 @@ import type {
 } from '../contract/slots.ts'
 import css from '../rows/Rows.module.css'
 import browserCss from '../rows/WorkspaceBrowser.module.css'
+import { activityLine } from './activity-line.ts'
 
 /**
- * Menu row (order 400): archive, or restore an archived row.
+ * Menu row (order 400): archive, or restore an archived row; absent on a row archived through its Workspace.
  * @param props - owner share, the archive share, and the menu open state.
- * @returns the row.
+ * @returns the row, or null for a Session archived through its Workspace.
  */
 export function ArchiveSessionMenuItem({
-  sessionId, useArchived, useMenuOpenState, useShortcuts, archiveSession, unarchiveSession, t,
+  sessionId, useArchived, useWorkspaceArchived, useMenuOpenState, useShortcuts, archiveSession, unarchiveSession, t,
 }: SessionMenuItemProps<ArchiveSessionInjected>) {
   const [, setMenuOpen] = useMenuOpenState()
   const shortcut = useShortcuts(rows => rows.find(row => row.id === 'session.archive'))
   const archived = useArchived(set => set.has(sessionId))
+  const workspaceArchived = useWorkspaceArchived(set => set.has(sessionId))
+  if (workspaceArchived) return null
   return (
     <MenuItemButton
       shortcut={archived ? undefined : shortcut}
@@ -49,14 +47,16 @@ export function ArchiveSessionMenuItem({
 }
 
 /**
- * Hover button (order 100): archive, or restore an archived row.
+ * Hover button (order 100): archive, or restore an archived row; absent on a row archived through its Workspace.
  * @param props - owner share and the archive share.
- * @returns the button.
+ * @returns the button, or null for a Session archived through its Workspace.
  */
 export function ArchiveSessionRowButton({
-  sessionId, useArchived, archiveSession, unarchiveSession, t,
+  sessionId, useArchived, useWorkspaceArchived, archiveSession, unarchiveSession, t,
 }: SessionRowActionProps<ArchiveSessionInjected>) {
   const archived = useArchived(set => set.has(sessionId))
+  const workspaceArchived = useWorkspaceArchived(set => set.has(sessionId))
+  if (workspaceArchived) return null
   return (
     <Tooltip label={t(archived ? 'actions.unarchive' : 'actions.archive')} side="bottom" align="end" delayMs={500}>
       <button
@@ -149,23 +149,4 @@ function ArchiveConfirmForm({ request, stopAndArchiveSession, onSettle, t }: {
       {error !== null && <div className={browserCss.renameError} role="alert">{error}</div>}
     </Modal>
   )
-}
-
-/**
- * One family's line: its count and the items' labels (ids when a family
- * carries no label). A family this dictionary does not know — a provider
- * merged into the kind map — falls through to the generic line.
- */
-function activityLine(entry: SessionActivity, t: SessionArchiveConfirmProps['t']): string {
-  const items = entry.items ?? []
-  const n = items.length
-  const names = items.map(item => item.label ?? item.id).join(t('archive.confirm.listSeparator'))
-  const plural = n === 1 ? 'one' : 'other'
-  switch (entry.kind) {
-    case 'turn': return t('archive.confirm.turn')
-    case 'subagent': return t(`archive.confirm.subagents.${plural}`, { n, names })
-    case 'job': return t(`archive.confirm.jobs.${plural}`, { n, names })
-    case 'schedule': return t(`archive.confirm.schedules.${plural}`, { n, names })
-    default: return t(`archive.confirm.other.${plural}`, { kind: entry.kind, n })
-  }
 }

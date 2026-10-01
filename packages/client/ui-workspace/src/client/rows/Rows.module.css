@@ -240,8 +240,10 @@
 /* Archived rows stay in place but read as inactive: titles drop to
    the caption label step (one step above dimmed, which reads as too faint
    over the sidebar fill). Archived search rows drop their meta line to the
-   same step so both lines read as one unit. */
+   same step so both lines read as one unit, and an archived Workspace row's
+   title takes the same step. */
 .sessionRow.archived .title,
+.projectRow.archived .title,
 .searchResultRow.archived .searchResultTitle,
 .searchResultRow.archived .searchResultWorkspace,
 .searchResultRow.archived .searchResultSnippet {

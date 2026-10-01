@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { WorkspaceId, WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import { DEFAULT_WORKSPACE_DIRECTORY } from '@deepseek-ai/dsh-api-workspace-controller/default-workspace'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -21,11 +22,12 @@ import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type {
   MenuOpenState, RowToast, RowToastState, SessionArchiveConfirmInjected, SessionArchiveConfirmRequest,
-  SessionRenameDialogInjected, SessionRenameTarget,
+  SessionRenameDialogInjected, SessionRenameTarget, WorkspaceArchiveConfirmInjected, WorkspaceArchiveConfirmRequest,
 } from '../src/client/contract/slots.ts'
 import {
   ArchiveSessionMenuItem, ArchiveSessionRowButton, SessionArchiveConfirmDialog,
 } from '../src/client/session-actions/ArchiveSession.tsx'
+import { WorkspaceArchiveConfirmDialog } from '../src/client/session-actions/ArchiveWorkspace.tsx'
 import { ForkSessionMenuItem } from '../src/client/session-actions/ForkSession.tsx'
 import { PinSessionMenuItem, PinSessionRowButton } from '../src/client/session-actions/PinSession.tsx'
 import { RenameSessionMenuItem, SessionRenameDialog } from '../src/client/session-actions/RenameSession.tsx'
@@ -165,9 +167,10 @@ describe('pin action', () => {
 })
 
 describe('archive action', () => {
-  /** The archive share over fixed membership: the bound Set hook and the two callbacks the entries call. */
-  const archiveShare = (archived: readonly string[] = []) => ({
+  /** The archive share over fixed membership: the bound Set hooks and the two callbacks the entries call. */
+  const archiveShare = (archived: readonly string[] = [], workspaceArchived: readonly string[] = []) => ({
     useArchived: hook(idSet(...archived)),
+    useWorkspaceArchived: hook(idSet(...workspaceArchived)),
     archiveSession: vi.fn(),
     unarchiveSession: vi.fn(),
   })
@@ -207,17 +210,35 @@ describe('archive action', () => {
     expect(archive.unarchiveSession).toHaveBeenCalledWith(sid('one'))
     expect(archive.archiveSession).toHaveBeenCalledOnce()
   })
+
+  it('offers nothing on a Session archived through its Workspace, whatever its own flag', () => {
+    const { state } = openMenu()
+    for (const archive of [archiveShare([], ['one']), archiveShare(['one'], ['one'])]) {
+      const menu = render(<ArchiveSessionMenuItem {...menuRow(state)} {...archive} />)
+      expect(menu.container.childElementCount).toBe(0)
+      const button = render(<ArchiveSessionRowButton {...actionRow} {...archive} />)
+      expect(button.container.childElementCount).toBe(0)
+    }
+    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.queryByRole('menuitem')).toBeNull()
+  })
 })
 
 describe('fork and rename rows', () => {
   it('fork closes the menu, then forks the Session', () => {
     const { state, setMenuOpen } = openMenu()
     const forkSession = vi.fn()
-    render(<ForkSessionMenuItem {...menuRow(state)} forkSession={forkSession} />)
+    render(<ForkSessionMenuItem {...menuRow(state)} useWorkspaceArchived={hook(idSet())} forkSession={forkSession} />)
     fireEvent.click(screen.getByRole('menuitem', { name: '分叉会话' }))
     expect(forkSession).toHaveBeenCalledWith(sid('one'))
     expect(setMenuOpen).toHaveBeenCalledWith(false)
     expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(forkSession))
+  })
+
+  it('fork offers nothing on a Session archived through its Workspace', () => {
+    const { state } = openMenu()
+    const view = render(<ForkSessionMenuItem {...menuRow(state)} useWorkspaceArchived={hook(idSet('one'))} forkSession={vi.fn()} />)
+    expect(view.container.childElementCount).toBe(0)
   })
 
   it('rename closes the menu, then asks for the dialog with the row title', () => {
@@ -488,6 +509,89 @@ declare module '@deepseek-ai/dsh-workspace/types' {
   }
 }
 
+describe('WorkspaceArchiveConfirmDialog', () => {
+  /** The dialog over a test-owned request source; settling clears the request the way apply does. */
+  function archiveDialog(stopAndArchiveWorkspace: WorkspaceArchiveConfirmInjected['stopAndArchiveWorkspace'], translate = t) {
+    const request = createSnapshotStore<WorkspaceArchiveConfirmRequest | null>(null)
+    const settleWorkspaceArchive = vi.fn(() => { request.set(null) })
+    render(
+      <WorkspaceArchiveConfirmDialog
+        {...overlay}
+        t={translate}
+        useWorkspaceArchiveRequest={bindSnapshotSelector(request)}
+        settleWorkspaceArchive={settleWorkspaceArchive}
+        stopAndArchiveWorkspace={stopAndArchiveWorkspace}
+      />,
+    )
+    const ask = (sessions: WorkspaceArchiveConfirmRequest['sessions'], title = 'Busy workspace'): void => {
+      act(() => { request.set({ workspaceId: 'alpha' as WorkspaceId, title, sessions }) })
+    }
+    return { settleWorkspaceArchive, ask }
+  }
+
+  it('renders nothing until a confirmation is requested', () => {
+    archiveDialog(vi.fn(async () => {}))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('names the workspace and every active session with its work, then stops and archives on confirm', async () => {
+    const pending = Promise.withResolvers<undefined>()
+    const stopAndArchiveWorkspace = vi.fn(() => pending.promise)
+    const { settleWorkspaceArchive, ask } = archiveDialog(stopAndArchiveWorkspace)
+    ask([
+      { sessionId: sid('one'), displayTitle: 'First session', activity: [{ kind: 'turn' }] },
+      {
+        sessionId: sid('two'),
+        displayTitle: 'Second session',
+        activity: [{ kind: 'job', items: [{ id: 'bash-1', label: 'pnpm run build' }] }, { kind: 'subagent', items: [{ id: 'child-1' }] }],
+      },
+    ])
+    const dialog = screen.getByRole('dialog', { name: '停止并归档此工作区？' })
+    expect(dialog.textContent).toContain('“Busy workspace”中有 2 个会话仍在进行工作')
+    const list = screen.getByRole('list', { name: '将被停止的工作' })
+    const sessions = [...list.children].map(item => [
+      item.firstChild?.textContent,
+      [...item.querySelectorAll('li')].map(line => line.textContent),
+    ])
+    expect(sessions).toEqual([
+      ['First session', ['进行中的回合']],
+      ['Second session', ['1 个后台任务：pnpm run build', '1 个运行中的子智能体：child-1']],
+    ])
+    fireEvent.click(screen.getByRole('button', { name: '停止并归档' }))
+    expect(stopAndArchiveWorkspace).toHaveBeenCalledWith('alpha')
+    // While the Host call is pending, closing is blocked and the status shows.
+    expect(screen.getByRole('status').textContent).toBe('正在停止并归档…')
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(settleWorkspaceArchive).not.toHaveBeenCalled()
+    await act(async () => { pending.resolve(undefined) })
+    expect(settleWorkspaceArchive).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('displays an automatic workspace title localized', () => {
+    const { ask } = archiveDialog(vi.fn(async () => {}), tEn)
+    ask([{ sessionId: sid('one'), displayTitle: 'First session', activity: [{ kind: 'turn' }] }], DEFAULT_WORKSPACE_DIRECTORY)
+    expect(screen.getByRole('dialog').textContent).toContain(`1 sessions in “${commonEn['workspace.defaultName']}” still have work in progress`)
+  })
+
+  it('keeps the dialog open with a rejection surfaced, and Cancel settles without archiving', async () => {
+    const stopAndArchiveWorkspace = vi.fn<WorkspaceArchiveConfirmInjected['stopAndArchiveWorkspace']>()
+      .mockRejectedValueOnce(new Error('stop exploded'))
+      .mockRejectedValueOnce('plain failure')
+    const { settleWorkspaceArchive, ask } = archiveDialog(stopAndArchiveWorkspace)
+    ask([{ sessionId: sid('one'), displayTitle: 'First session', activity: [{ kind: 'turn' }] }])
+    fireEvent.click(screen.getByRole('button', { name: '停止并归档' }))
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('stop exploded') })
+    fireEvent.click(screen.getByRole('button', { name: '停止并归档' }))
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('plain failure') })
+    expect(settleWorkspaceArchive).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(settleWorkspaceArchive).toHaveBeenCalledOnce()
+    expect(stopAndArchiveWorkspace).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('RowActionToast', () => {
   /** The notice surface over a test-owned notice source; dismissal clears the notice the way apply does. */
   function toastSurface(viewState: { archivedFilter?: 'default' | 'show' | 'only' } = { archivedFilter: 'default' }) {
@@ -501,6 +605,7 @@ describe('RowActionToast', () => {
     const view = createSnapshotStore(state)
     const dismissToast = vi.fn(() => { toast.set(null) })
     const undoArchive = vi.fn()
+    const undoWorkspaceArchive = vi.fn()
     const showArchived = vi.fn()
     render(
       <RowActionToast
@@ -510,6 +615,7 @@ describe('RowActionToast', () => {
         actions={instance.actions}
         dismissToast={dismissToast}
         undoArchive={undoArchive}
+        undoWorkspaceArchive={undoWorkspaceArchive}
         showArchived={showArchived}
       />,
     )
@@ -517,7 +623,7 @@ describe('RowActionToast', () => {
     const notify = (notice: RowToast): void => {
       act(() => { toast.set({ ...notice, seq: ++seq }) })
     }
-    return { dismissToast, undoArchive, showArchived, notify }
+    return { dismissToast, undoArchive, undoWorkspaceArchive, showArchived, notify }
   }
 
   it('renders nothing without a notice', () => {
@@ -560,6 +666,26 @@ describe('RowActionToast', () => {
     expect(screen.getByRole('alert').textContent).toBe('会话已归档，可撤销或筛选已归档会话')
   })
 
+  it.each([
+    ['workspaceArchived', '工作区已归档，可撤销或筛选已归档会话'],
+    ['workspaceStoppedAndArchived', '已停止并归档工作区，可撤销或筛选已归档会话'],
+  ] as const)('the %s notice undoes through the Workspace and offers the filter action', (kind, text) => {
+    const { dismissToast, undoArchive, undoWorkspaceArchive, showArchived, notify } = toastSurface()
+    notify({ kind, workspaceId: 'alpha' as WorkspaceId })
+    expect(screen.getByRole('alert').textContent).toBe(text)
+    fireEvent.click(screen.getByRole('button', { name: '撤销' }))
+    expect(dismissToast).toHaveBeenCalledOnce()
+    expect(undoWorkspaceArchive).toHaveBeenCalledWith('alpha')
+    expect(undoArchive).not.toHaveBeenCalled()
+    expect(callOrder(dismissToast)).toBeLessThan(callOrder(undoWorkspaceArchive))
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    notify({ kind, workspaceId: 'beta' as WorkspaceId })
+    fireEvent.click(screen.getByRole('button', { name: '筛选已归档会话' }))
+    expect(showArchived).toHaveBeenCalledOnce()
+    expect(undoWorkspaceArchive).toHaveBeenCalledOnce()
+  })
+
   it.each(['show', 'only'] as const)('omits the filter action while the %s filter already shows archived rows', (archivedFilter) => {
     const { notify } = toastSurface({ archivedFilter })
     notify({ kind: 'archived', sessionId: sid('one') })
@@ -572,6 +698,7 @@ describe('RowActionToast', () => {
     ['pinFailed', '置顶失败，请稍后重试'],
     ['unpinFailed', '取消置顶失败，请稍后重试'],
     ['archivedNotOpenable', '已归档对话暂时无法查看，请取消归档后查看'],
+    ['workspaceArchivedNotOpenable', '该会话所在工作区已归档，请先取消归档工作区'],
     ['defaultWorkspaceFailed', '无法创建默认工作区，请通过“选择工作区”选择文件夹'],
   ] as const)('shows the %s warning and takes it down when its hold ends', (kind, text) => {
     vi.useFakeTimers()
@@ -640,7 +767,9 @@ it('shows effective Session shortcuts while menu clicks keep the row target', ()
   const requestSessionRename = vi.fn()
   const forkSession = vi.fn()
   const archiveSession = vi.fn()
-  const props = { ...menuRow([true, vi.fn()]), useShortcuts: hook(shortcuts.catalog.getSnapshot()) }
+  const props = {
+    ...menuRow([true, vi.fn()]), useShortcuts: hook(shortcuts.catalog.getSnapshot()), useWorkspaceArchived: hook(idSet()),
+  }
   render(<>
     <RenameSessionMenuItem {...props} requestSessionRename={requestSessionRename} />
     <ForkSessionMenuItem {...props} forkSession={forkSession} />

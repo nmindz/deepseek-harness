@@ -254,12 +254,25 @@ export type WorkspaceBrowserInjected = {
   searchResultLimit: number
   /** Open the Session rename dialog (a row title double-click); the rename action entry raises the same request. */
   requestSessionRename: (sessionId: SessionId, currentTitle: string) => void
-  /** Tell the user an archived row cannot be opened (a click on it). */
-  notifyArchivedNotOpenable: () => void
+  /**
+   * Tell the user an archived row cannot be opened (a click on it); the notice
+   * names what to restore — the Session itself or the Workspace archiving it.
+   */
+  notifyArchivedNotOpenable: (archivedBy: 'session' | 'workspace') => void
   /** Rename a Host Workspace (rejects on name conflict; resolves on durability). */
   renameWorkspace: (workspaceId: WorkspaceId, title: string) => Promise<void>
   /** Delete only a Host Workspace registration; directory and Session logs remain. */
   deleteWorkspace: (workspaceId: WorkspaceId) => Promise<void>
+  /**
+   * Archive a Workspace into the registry-global set: the group keeps its
+   * order slot and every Session it accounts is archived through it, each
+   * Session's own flags untouched. A Workspace whose Sessions have running
+   * work is not archived by this call: the Host's refusal opens the
+   * stop-and-archive confirmation instead. Success raises the notice.
+   */
+  archiveWorkspace: (workspaceId: WorkspaceId) => void
+  /** Remove a Workspace from the registry-global archived set, restoring its group in place. */
+  unarchiveWorkspace: (workspaceId: WorkspaceId) => void
   /**
    * Reorder a Workspace in the durable registry display order.
    * Omitted anchor appends to the end.
@@ -290,9 +303,13 @@ export type SessionRowActionProps<Injected extends object = object> =
 export type RowToast =
   | { kind: 'archived'; sessionId: SessionId }
   | { kind: 'stoppedAndArchived'; sessionId: SessionId }
+  | { kind: 'workspaceArchived'; workspaceId: WorkspaceId }
+  | { kind: 'workspaceStoppedAndArchived'; workspaceId: WorkspaceId }
   | { kind: 'pinFailed' }
   | { kind: 'unpinFailed' }
   | { kind: 'archivedNotOpenable' }
+  /** The clicked row's Workspace is archived; restoring the Workspace, not the Session, opens it. */
+  | { kind: 'workspaceArchivedNotOpenable' }
   | { kind: 'defaultWorkspaceFailed' }
   /**
    * An explicit New Session request that failed. `message` is untranslated:
@@ -314,7 +331,7 @@ export interface PinSessionInjected {
   hooks: {
     /** Pinned Session ids. */
     pinned: HostObservable<ReadonlySet<SessionId>>
-    /** Archived Session ids (pin does not apply to an archived row). */
+    /** Effectively archived Session ids — themselves or through their Workspace (pin does not apply to either). */
     archived: HostObservable<ReadonlySet<SessionId>>
   }
   /** Pin a Session; on success it leads its accounts' saved orders, on failure the notice says so. */
@@ -331,8 +348,10 @@ export interface PinSessionInjected {
  */
 export interface ArchiveSessionInjected {
   hooks: {
-    /** Archived Session ids. */
+    /** Archived Session ids (the Session's own flag). */
     archived: HostObservable<ReadonlySet<SessionId>>
+    /** Sessions archived through their Workspace; the action does not offer itself on such a row. */
+    workspaceArchived: HostObservable<ReadonlySet<SessionId>>
   }
   /**
    * Archive a Session into the registry-global set: the row keeps its
@@ -378,8 +397,49 @@ export interface SessionArchiveConfirmInjected {
   stopAndArchiveSession: (sessionId: SessionId) => Promise<void>
 }
 
+/**
+ * A stop-and-archive confirmation the Workspace archive action asked for: the
+ * Host refused the plain archive because these Sessions' work still runs.
+ */
+export interface WorkspaceArchiveConfirmRequest {
+  /** Workspace to stop and archive. */
+  workspaceId: WorkspaceId
+  /** The Workspace's stored title, named in the dialog (an automatic title displays localized). */
+  title: string
+  /** Every active Session the Host reported, in account order, each with its work in family order. */
+  sessions: readonly {
+    sessionId: SessionId
+    /** The row's display title, named in the dialog. */
+    displayTitle: string
+    activity: readonly SessionActivity[]
+  }[]
+}
+
+/**
+ * Workspace stop-and-archive dialog share: the pending confirmation, its
+ * settlement, and the archive hop that asks the Host to stop the work first.
+ */
+export interface WorkspaceArchiveConfirmInjected {
+  hooks: {
+    /** The confirmation asked for, until the dialog consumes or cancels it. */
+    workspaceArchiveRequest: HostObservable<WorkspaceArchiveConfirmRequest | null>
+  }
+  /** Consume or cancel the pending confirmation. */
+  settleWorkspaceArchive: () => void
+  /**
+   * Archive a Workspace after the Host stops its Sessions' running work;
+   * resolves once the archive set is durable (the stops settle in the
+   * background) and raises the stopped-and-archived notice.
+   */
+  stopAndArchiveWorkspace: (workspaceId: WorkspaceId) => Promise<void>
+}
+
 /** Fork action share. */
 export interface ForkSessionInjected {
+  hooks: {
+    /** Sessions archived through their Workspace; the row does not offer itself on such a Session. */
+    workspaceArchived: HostObservable<ReadonlySet<SessionId>>
+  }
   /** Fork a Session at its last completed turn; the child arrives through the Host list. */
   forkSession: (sessionId: SessionId) => void
 }
@@ -418,9 +478,11 @@ export interface RowToastInjected {
   }
   /** Take the notice down. */
   dismissToast: () => void
-  /** Undo an archive from its notice. */
+  /** Undo a Session archive from its notice. */
   undoArchive: (sessionId: SessionId) => void
-  /** Switch the archived filter to "show" so the archived row is back in view. */
+  /** Undo a Workspace archive from its notice. */
+  undoWorkspaceArchive: (workspaceId: WorkspaceId) => void
+  /** Switch the archived filter to "show" so the archived rows are back in view. */
   showArchived: () => void
 }
 
@@ -437,6 +499,13 @@ export type SessionArchiveConfirmProps =
   & PropsLocale<'workspace'>
   & Omit<SessionArchiveConfirmInjected, 'hooks'>
   & PropsHooks<SessionArchiveConfirmInjected['hooks']>
+
+/** Props of the Workspace stop-and-archive dialog entry in `shell.overlay`. */
+export type WorkspaceArchiveConfirmProps =
+  PropsRuntime<'shell.overlay'>
+  & PropsLocale<'workspace'>
+  & Omit<WorkspaceArchiveConfirmInjected, 'hooks'>
+  & PropsHooks<WorkspaceArchiveConfirmInjected['hooks']>
 
 /**
  * Props of the row toast entry in `shell.overlay`. The declared viewing store

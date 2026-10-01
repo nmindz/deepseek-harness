@@ -8,8 +8,8 @@
  * client half. WorkspaceBrowser additionally declares the two Session row
  * action lists, and this apply registers the shipped actions — pin, rename,
  * fork, archive — into them the way any client plugin would, each with its
- * own behavior, plus the rename dialog and the row-action notice into
- * `shell.overlay` (see the contract module doc). It also declares two
+ * own behavior, plus the rename dialog, the two stop-and-archive dialogs, and
+ * the row-action notice into `shell.overlay` (see the contract module doc). It also declares two
  * Session-row seats: the leading decoration a row renders only while its own
  * primary state is idle, and the section the row's hover card renders between
  * its relative time and its trailing status line. Export discipline:
@@ -20,7 +20,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { RemoteHostFacts } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type {
-  IWorkspaces, SessionActivity, WorkspaceArchiveError, WorkspaceSnapshot,
+  IWorkspaces, SessionActivity, WorkspaceArchiveError, WorkspaceId, WorkspaceSnapshot,
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { HostObservable, SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
@@ -39,13 +39,16 @@ import {
   type ArchiveSessionInjected, type ForkSessionInjected, menuOpenStateFactory, type PinSessionInjected,
   type SessionArchiveConfirmInjected, type SessionArchiveConfirmRequest,
   type RenameSessionInjected, type RowToast, type RowToastInjected, type RowToastState, type SessionRenameDialogInjected,
+  type WorkspaceArchiveConfirmInjected, type WorkspaceArchiveConfirmRequest,
   type WorkspaceBrowserInjected, type WorkspacePickerInjected,
 } from './contract/slots.ts'
 import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from './shortcuts.ts'
 import { UiWorkspaceService } from './navigation.ts'
 import { createWorkspaceViewStore } from './stores.ts'
+import { effectiveArchivedSessionIds, workspaceArchivedSessionIds } from './tree.ts'
 import { WorkspaceBrowser } from './rows/WorkspaceBrowser.tsx'
 import { ArchiveSessionMenuItem, ArchiveSessionRowButton, SessionArchiveConfirmDialog } from './session-actions/ArchiveSession.tsx'
+import { WorkspaceArchiveConfirmDialog } from './session-actions/ArchiveWorkspace.tsx'
 import { derive } from './session-actions/derived.ts'
 import { ForkSessionMenuItem } from './session-actions/ForkSession.tsx'
 import { PinSessionMenuItem, PinSessionRowButton } from './session-actions/PinSession.tsx'
@@ -143,19 +146,54 @@ export function apply(ctx: Context): void {
   const openSession: WorkspaceBrowserInjected['open'] = (sessionId) => {
     uiWorkspace.openSession(sessionId)
   }
-  // Registry-global sets as Sets, rebuilt only when the Workspace snapshot changes.
+  // Registry-global sets as Sets, rebuilt only when the Workspace snapshot
+  // changes: the pins, the Sessions' own archive flags, the Sessions archived
+  // through their Workspace, and the union a row reads as "archived".
   const pinnedSet = derive(workspaces.list, snapshot => new Set<SessionId>(snapshot.pinnedSessionIds))
   const archivedSet = derive(workspaces.list, snapshot => new Set<SessionId>(snapshot.archivedSessionIds))
+  const workspaceArchivedSet = derive(
+    workspaces.list, snapshot => workspaceArchivedSessionIds(snapshot.items, snapshot.archivedWorkspaceIds),
+  )
+  const effectiveArchivedSet = derive(workspaces.list, snapshot => effectiveArchivedSessionIds(snapshot.items, snapshot))
   // Plugin-private facts the row actions and their overlay surfaces share:
-  // the pending rename request and the notice on display. Each business
-  // writes through its own injected callback and the surface reads through
-  // its bound hook.
+  // the pending rename request, the two pending stop-and-archive requests,
+  // and the notice on display. Each business writes through its own injected
+  // callback and the surface reads through its bound hook.
   const renameRequest = derive(shortcutControls.state, state => state.renameTarget)
   const archiveRequest = createSnapshotStore<SessionArchiveConfirmRequest | null>(null)
+  const workspaceArchiveRequest = createSnapshotStore<WorkspaceArchiveConfirmRequest | null>(null)
   const requestSessionRename = shortcutControls.rename
   const unarchiveSession = (sessionId: SessionId): void => {
     uiWorkspace.unarchiveSession(sessionId).catch((reason: unknown) => {
       console.warn('session unarchive rejected:', reason)
+    })
+  }
+  const unarchiveWorkspace = (workspaceId: WorkspaceId): void => {
+    workspaces.unarchiveWorkspace(workspaceId).catch((reason: unknown) => {
+      console.warn('workspace unarchive rejected:', reason)
+    })
+  }
+  // Mirrors the Session flow: a quiet Workspace archives without asking and
+  // the notice offers undo; the Host's refusal for running work opens the
+  // confirmation naming every active Session and its work.
+  const archiveWorkspace = (workspaceId: WorkspaceId): void => {
+    workspaces.archiveWorkspace(workspaceId).then(() => {
+      notify({ kind: 'workspaceArchived', workspaceId })
+    }).catch((reason: unknown) => {
+      const active = activeWorkspaceRefusal(reason)
+      if (active === undefined) {
+        console.warn('workspace archive rejected:', reason)
+        return
+      }
+      const title = workspaces.list.getSnapshot().items.find(item => item.workspaceId === workspaceId)?.title ?? workspaceId
+      const summaries = sessions.list.getSnapshot().byId
+      workspaceArchiveRequest.set({
+        workspaceId,
+        title,
+        sessions: active.map(({ sessionId, activity }) => ({
+          sessionId, displayTitle: summaries[sessionId]?.displayTitle ?? sessionId, activity,
+        })),
+      })
     })
   }
   const renameSession: SessionRenameDialogInjected['renameSession'] = async (sessionId, title) => {
@@ -167,7 +205,7 @@ export function apply(ctx: Context): void {
     if (!result.ok) throw new Error(result.error.message)
   }
   const pinInjected = (): PinSessionInjected => ({
-    hooks: { pinned: pinnedSet, archived: archivedSet },
+    hooks: { pinned: pinnedSet, archived: effectiveArchivedSet },
     // Pin failures surface as a notice: nothing else on the surface moves, so
     // a silent failure would read as a dead action.
     pinSession: (sessionId) => {
@@ -178,7 +216,7 @@ export function apply(ctx: Context): void {
     },
   })
   const archiveInjected = (): ArchiveSessionInjected => ({
-    hooks: { archived: archivedSet },
+    hooks: { archived: archivedSet, workspaceArchived: workspaceArchivedSet },
     // Archive preserves the log and the account position, so a quiet Session
     // needs no confirmation; the notice offers undo and the archived filter.
     // The Host's refusal for running work is the one case that asks first:
@@ -207,7 +245,16 @@ export function apply(ctx: Context): void {
       notify({ kind: 'stoppedAndArchived', sessionId })
     },
   })
+  const workspaceArchiveConfirmInjected = (): WorkspaceArchiveConfirmInjected => ({
+    hooks: { workspaceArchiveRequest },
+    settleWorkspaceArchive: () => { workspaceArchiveRequest.set(null) },
+    stopAndArchiveWorkspace: async (workspaceId) => {
+      await workspaces.archiveWorkspace(workspaceId, { stopActivity: true })
+      notify({ kind: 'workspaceStoppedAndArchived', workspaceId })
+    },
+  })
   const forkInjected = (): ForkSessionInjected => ({
+    hooks: { workspaceArchived: workspaceArchivedSet },
     forkSession: (sessionId) => {
       uiWorkspace.forkSession(sessionId, (childId) => {
         ctx.get('productAnalytics')?.track('branch_session_click', { session_id: childId, parent_session_id: sessionId, click_position: 'sidebar' })
@@ -226,6 +273,7 @@ export function apply(ctx: Context): void {
     hooks: { toast: rowToast },
     dismissToast: () => { rowToast.set(null) },
     undoArchive: unarchiveSession,
+    undoWorkspaceArchive: unarchiveWorkspace,
     showArchived: () => { viewInstance.actions.setArchivedFilter('show') },
   })
   const browserInjected = (): WorkspaceBrowserInjected => ({
@@ -236,9 +284,13 @@ export function apply(ctx: Context): void {
     searchSessions,
     searchResultLimit: sessions.searchResultLimit,
     requestSessionRename,
-    notifyArchivedNotOpenable: () => { notify({ kind: 'archivedNotOpenable' }) },
+    notifyArchivedNotOpenable: (archivedBy) => {
+      notify({ kind: archivedBy === 'workspace' ? 'workspaceArchivedNotOpenable' : 'archivedNotOpenable' })
+    },
     renameWorkspace: async (workspaceId, title) => { await workspaces.rename(workspaceId, title) },
     deleteWorkspace: async (workspaceId) => { await workspaces.delete(workspaceId) },
+    archiveWorkspace,
+    unarchiveWorkspace,
     insertWorkspaceBefore: async (workspaceId, beforeWorkspaceId) => {
       await workspaces.insertBefore(workspaceId, beforeWorkspaceId)
     },
@@ -301,6 +353,9 @@ export function apply(ctx: Context): void {
     yield ctx.slots.register({
       name: 'shell.overlay', id: 'workspace.session-archive', locale: NS, inject: archiveConfirmInjected,
     }, SessionArchiveConfirmDialog)
+    yield ctx.slots.register({
+      name: 'shell.overlay', id: 'workspace.workspace-archive', locale: NS, inject: workspaceArchiveConfirmInjected,
+    }, WorkspaceArchiveConfirmDialog)
     // The toast shares the browser's viewing store: it reads the archived
     // filter to drop the archived notice's filter action once rows are visible.
     yield ctx.slots.register({
@@ -319,12 +374,25 @@ export function apply(ctx: Context): void {
 }
 
 /**
- * The activity a Host `workspace/session-active` refusal reported, or nothing
- * for any other failure. The class identity check goes by name: client plugin
- * bundles do not share error-class identity.
+ * The Host archive refusal `reason` carries, or nothing for any other
+ * failure. The class identity check goes by name: client plugin bundles do
+ * not share error-class identity.
  */
-function activeSessionRefusal(reason: unknown): readonly SessionActivity[] | undefined {
+function archiveRefusal(reason: unknown): WorkspaceArchiveError['rpcError'] | undefined {
   if (!(reason instanceof Error) || reason.name !== 'WorkspaceArchiveError') return undefined
-  const { rpcError } = reason as WorkspaceArchiveError
-  return rpcError.code === 'workspace/session-active' ? rpcError.details.activity : undefined
+  return (reason as WorkspaceArchiveError).rpcError
+}
+
+/** The activity a Host `workspace/session-active` refusal reported, or nothing for any other failure. */
+function activeSessionRefusal(reason: unknown): readonly SessionActivity[] | undefined {
+  const rpcError = archiveRefusal(reason)
+  return rpcError?.code === 'workspace/session-active' ? rpcError.details.activity : undefined
+}
+
+/** The active Sessions a Host `workspace/workspace-active` refusal reported, or nothing for any other failure. */
+function activeWorkspaceRefusal(
+  reason: unknown,
+): readonly { sessionId: SessionId; activity: readonly SessionActivity[] }[] | undefined {
+  const rpcError = archiveRefusal(reason)
+  return rpcError?.code === 'workspace/workspace-active' ? rpcError.details.sessions : undefined
 }

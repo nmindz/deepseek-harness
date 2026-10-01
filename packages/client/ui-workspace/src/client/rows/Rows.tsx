@@ -2,8 +2,8 @@
  * Workspace browser tree row components (figma Cell set 14:3080): pure presentational —
  * all data and callbacks arrive via props. Hover swaps (folder->chevron,
  * time->ellipsis, action buttons) are CSS-only, and a session row's clipped
- * title marquees programmatically while the row is hovered. Workspace row
- * menus are visual-only except Rename/Delete. A Session row's "..." menu and
+ * title marquees programmatically while the row is hovered. A Workspace row's
+ * menu offers Rename, Archive or Unarchive, and Delete. A Session row's "..." menu and
  * its hover buttons are the `sidebar.workspaces.session.menu.item` and
  * `sidebar.workspaces.session.row.action` lists, rendered through the
  * browser's `renderSlot` with the menu's open state as the occurrence's hook
@@ -157,11 +157,12 @@ function createdLabel(createdAt: number, t: RowTranslate): string {
   return t('hover.created', { time: `${date} ${pad2(d.getHours())}:${pad2(d.getMinutes())}` })
 }
 
-/** Hover-card body: workspace title, display directory path, absolute creation time. */
-function WorkspaceHoverContent({ label, cwd, createdAt, t }: {
+/** Hover-card body: workspace title, display directory path, absolute creation time, and the archived line when it applies. */
+function WorkspaceHoverContent({ label, cwd, createdAt, archived, t }: {
   label: string
   cwd: string | undefined
   createdAt: number
+  archived: boolean
   t: RowTranslate
 }) {
   return (
@@ -169,6 +170,12 @@ function WorkspaceHoverContent({ label, cwd, createdAt, t }: {
       <div className={css.hoverTitle}>{label}</div>
       <div className={css.hoverPath}>{cwd}</div>
       <div className={css.hoverTime}>{createdLabel(createdAt, t)}</div>
+      {archived && (
+        <div className={clsx(css.hoverStatus, css.hoverArchived)}>
+          <IconArchiveOutlineRegular size={14} />
+          <span>{t('row.workspaceArchived')}</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -205,7 +212,9 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): 'before' |
 /**
  * Project (workspace) header row: folder + title;
  * hover reveals the chevron and create button, and dwelling on a real
- * Workspace shows its hover card (the ungrouped bucket has none).
+ * Workspace shows its hover card (the ungrouped bucket has none). An archived
+ * group reads dimmed like an archived session row, offers Unarchive in place
+ * of Archive, and has no create button: the Host refuses a Session in it.
  * `containsCurrent` arrives on the node (derivation fact, no renderer scan).
  * @param props.group - derived group node.
  * @param props.containsCurrentDescendant - highlight an ancestor even when its subtree is collapsed.
@@ -223,7 +232,7 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
   onToggle: () => void
   onCreate: () => void
   /** Real-Workspace actions; absent for the ungrouped bucket (no menu shown). */
-  actions?: { rename: () => void; delete: () => void } | undefined
+  actions?: { rename: () => void; archive: () => void; unarchive: () => void; delete: () => void } | undefined
   /** Present only for real Workspace rows in the grouped view. */
   drag?: WorkspaceRowDragProps | undefined
   /** Host account home; POSIX home-rooted hover paths display as `~`. */
@@ -237,11 +246,15 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
   const [menuOpen, setMenuOpen] = useState(false)
   const workspaceMenuItems = [
     { id: 'rename', label: t('rename'), icon: <IconEditOutlineRegular /> },
+    row.archived
+      ? { id: 'unarchive', label: t('menu.unarchiveWorkspace'), icon: <IconUnarchiveOutlineRegular /> }
+      : { id: 'archive', label: t('menu.archiveWorkspace'), icon: <IconArchiveOutlineRegular /> },
+    { type: 'separator' as const, id: 'delete-separator' },
     { id: 'delete', label: t('delete.workspace'), icon: <IconTrashOutlineRegular />, danger: true },
   ]
   const ownRow = (
     <div
-      className={clsx(css.projectRow, menuOpen && css.menuOpen)}
+      className={clsx(css.projectRow, menuOpen && css.menuOpen, row.archived && css.archived)}
       data-row-key={`workspace:${group.key}`}
       role="treeitem"
       aria-expanded={row.expanded}
@@ -273,12 +286,14 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
             items={workspaceMenuItems}
             onSelect={(id) => {
               setMenuOpen(false)
-              // Unknown ids leave before the dispatch: a future menu row must
-              // not inherit the destructive branch as an else fallback.
-              /* v8 ignore next -- Menu can emit only the rename and delete rows supplied above. */
-              if (id !== 'rename' && id !== 'delete') return
-              if (id === 'rename') actions.rename()
-              else actions.delete()
+              switch (id) {
+                case 'rename': actions.rename(); break
+                case 'archive': actions.archive(); break
+                case 'unarchive': actions.unarchive(); break
+                case 'delete': actions.delete(); break
+                /* v8 ignore next -- Menu emits only the row ids supplied above. */
+                default: break
+              }
             }}
             portal
             closeOnPointerLeave
@@ -294,17 +309,19 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
             )}
           />
         )}
-        <Tooltip label={t('actions.newSession')} shortcutKeys={newShortcut?.keys} side="bottom" align="end" delayMs={500}>
-          <button
-            type="button"
-            className={css.iconButton}
-            aria-keyshortcuts={newShortcut?.aria}
-            aria-label={t('actions.newSession.aria', { name: label })}
-            onClick={(e) => { e.stopPropagation(); onCreate() }}
-          >
-            <IconNewChatOutlineRegular />
-          </button>
-        </Tooltip>
+        {!row.archived && (
+          <Tooltip label={t('actions.newSession')} shortcutKeys={newShortcut?.keys} side="bottom" align="end" delayMs={500}>
+            <button
+              type="button"
+              className={css.iconButton}
+              aria-keyshortcuts={newShortcut?.aria}
+              aria-label={t('actions.newSession.aria', { name: label })}
+              onClick={(e) => { e.stopPropagation(); onCreate() }}
+            >
+              <IconNewChatOutlineRegular />
+            </button>
+          </Tooltip>
+        )}
       </span>
     </div>
   )
@@ -317,6 +334,7 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
         label={row.label}
         cwd={row.cwd === undefined ? undefined : abbreviateHomePath(row.cwd, home)}
         createdAt={row.createdAt}
+        archived={row.archived}
         t={t}
       />}
       openDelayMs={800}
