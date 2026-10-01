@@ -6,7 +6,7 @@
 import {
   type SessionListState, type SessionSearchResultItem, type SessionSummary,
 } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type { WorkspaceAppearance, WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type {
   SessionStatusSnapshot,
 } from '@deepseek-ai/dsh-client-ui-session/client'
@@ -83,6 +83,8 @@ export interface GroupNode {
   /** Workspace creation time (epoch ms); absent only for the ungrouped bucket. */
   createdAt: number | undefined
   label: string
+  /** User-chosen accent color and icon; absent for the default look and for the ungrouped bucket. */
+  appearance: WorkspaceAppearance | undefined
   /** Total visible sessions in the group. */
   sessionCount: number
   expanded: boolean
@@ -130,6 +132,7 @@ interface Group {
   cwd: string | undefined
   createdAt: number | undefined
   label: string
+  appearance: WorkspaceAppearance | undefined
   archived: boolean
   sessions: SessionSummary[]
 }
@@ -472,10 +475,11 @@ function buildGroup(
   cwd: string | undefined,
   createdAt: number | undefined,
   label: string,
+  appearance: WorkspaceAppearance | undefined,
   archived: boolean,
   members: readonly SessionSummary[],
 ): Group {
-  return { key, workspaceId, cwd, createdAt, label, archived, sessions: [...members] }
+  return { key, workspaceId, cwd, createdAt, label, appearance, archived, sessions: [...members] }
 }
 
 /** Apply a stored Ungrouped order and append newly loose Sessions by recency. */
@@ -531,7 +535,7 @@ function groupByWorkspace(
     if (archivedFilter === 'only' && members.length === 0 && !workspaceArchived) continue
     groups.push(buildGroup(
       workspace.workspaceId, workspace.workspaceId, workspace.path,
-      Date.parse(workspace.createdAt), workspace.title, workspaceArchived, members,
+      Date.parse(workspace.createdAt), workspace.title, workspace.appearance, workspaceArchived, members,
     ))
   }
   const stray = list.ids
@@ -545,6 +549,7 @@ function groupByWorkspace(
       undefined,
       undefined,
       '',
+      undefined,
       false,
       orderedUngrouped(stray, ungroupedOrder, list.byId),
     ))
@@ -635,6 +640,7 @@ export function deriveGroups(
       cwd: g.cwd,
       createdAt: g.createdAt,
       label: g.label,
+      appearance: g.appearance,
       sessionCount: g.sessions.length,
       expanded,
       containsCurrent: g.key === currentGroup,

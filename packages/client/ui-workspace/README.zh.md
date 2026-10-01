@@ -51,7 +51,16 @@ kind: "package-reference"
 
 ### 管理会话
 
-Session 行内的 Rename 操作打开一个以该行显示标题预填的对话框；确认未修改的标题是有意允许的——这正是把当前自动标题钉住、不再被重新生成覆盖的手势。双击标题也会打开 Rename；对于未归档 Session，先发生的点击会打开其对话。Rename 使用临时 `workspaceOperation` reference，并等待首次历史打开。行内 Fork 在源会话最后一个已完成轮次处 fork，通过 Session Controller 递增继承的持久化标题，不 retain 子会话、不打开其历史，也不改变选择。Workspace 行菜单提供重命名、归档工作区（已归档分组上为取消归档工作区），以及分隔线之后的删除工作区。Workspace 行内的 Delete 操作会打开确认框，说明保留边界；成功后该分组被移除，其 Session 则留在 Ungrouped 下。Pin、Rename、Fork、Archive 本身就是 `sidebar.workspaces.session.menu.item` 列表的条目（pin 与 archive 同时也是 `sidebar.workspaces.session.row.action` 的条目），因此客户端插件的 action 由其 `order` 决定落在哪个位置。
+Session 行内的 Rename 操作打开一个以该行显示标题预填的对话框；确认未修改的标题是有意允许的——这正是把当前自动标题钉住、不再被重新生成覆盖的手势。双击标题也会打开 Rename；对于未归档 Session，先发生的点击会打开其对话。Rename 使用临时 `workspaceOperation` reference，并等待首次历史打开。行内 Fork 在源会话最后一个已完成轮次处 fork，通过 Session Controller 递增继承的持久化标题，不 retain 子会话、不打开其历史，也不改变选择。Workspace 行菜单提供重命名、更改图标…、归档工作区（已归档分组上为取消归档工作区），以及分隔线之后的删除工作区。Workspace 行内的 Delete 操作会打开确认框，说明保留边界；成功后该分组被移除，其 Session 则留在 Ungrouped 下。Pin、Rename、Fork、Archive 本身就是 `sidebar.workspaces.session.menu.item` 列表的条目（pin 与 archive 同时也是 `sidebar.workspaces.session.row.action` 的条目），因此客户端插件的 action 由其 `order` 决定落在哪个位置。
+
+“更改图标…”打开一个对话框，在 Workspace 标题旁预览行内图标，并编辑两个持久字段：来自固定调色板的强调色（蓝、绿、琥珀、红、灰，或默认墨色；每种强调色在深色模式下浅一级）和图标——十九个精选图标之一，或在表情符号字段中输入的恰好一个表情符号。有效的表情符号会选中自身并清除图标选择；不是单个表情符号的任何输入都会被就地拒绝，并显示该字段自己的提示。方向键在颜色条与图标网格内移动选中项，Enter 保存，Escape 取消。“恢复默认”把两个字段都恢复为默认外观，“保存”在草稿与已存外观相同时禁用，Host 的拒绝以直白措辞留在对话框内且草稿保持不变。所选外观会渲染在侧栏行以及 hero 选择器的 Workspace 列表中；已归档分组的图标无论强调色为何都降为归档行的淡色墨色。未选择图标的 Workspace 渲染随分组开合的文件夹，除非插件配置指定了另一个默认值；对话框的预览同样显示该默认值。`defaultIcon` 键接受一个图标引用——`icon:<精选 id>` 或 `emoji:<一个字素>`——格式错误的值会使插件加载失败：
+
+```yaml
+- id: ui-workspace
+  name: '@deepseek-ai/dsh-client-ui-workspace'
+  config:
+    defaultIcon: icon:code
+```
 
 对静止的 Session，Archive 不经确认对话框直接提交，并保留 Session 的记账位置。仍有工作在跑的 Session 是唯一会先询问的情形：Host 拒绝普通归档并列出这些工作，侧栏随即打开"停止并归档"对话框，按族列出——进行中的回合、运行中的子代理、后台任务、定时提醒，各带名称——并写明恢复路径；确认后请 Host 按停止按钮同样的方式停止这些工作，归档集合持久化后即完成归档，停止在后台收敛；取消则让 Session 继续运行并保持可见。视图选项以一组显式三选一控制显隐：隐藏已归档（默认项）隐藏已归档 Session，全部对话（显示已归档）将其纳入列表，仅显示已归档则隐藏普通 Session，并丢弃没有归档 Session 的 Workspace；树形分组下，被丢弃 Workspace 的子级挂到最近一个仍显示的祖先下。可见的归档行置灰，并提供无障碍说明，告知取消归档后才能打开；Rename、Fork 与取消归档仍然可用。归档成功后的提示提供"撤销"动作，并在归档行仍被隐藏时附带"筛选已归档会话"动作，后者直接把筛选切到全部对话（显示已归档）；停止并归档显示同样的提示但措辞不同，撤销只恢复 Session，不会让被停止的工作继续。取消归档移除归档标记，但不恢复置顶，也不改变保存的位置。列表为空时显示居中的"图标在上、文字在下"占位；仅显示已归档视图用自己的文案（暂无已归档会话），并附"查看其他会话"文字按钮，点击把筛选切回隐藏已归档。
 

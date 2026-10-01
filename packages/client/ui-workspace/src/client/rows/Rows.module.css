@@ -139,6 +139,41 @@
   color: var(--dsw-alias-state-business-primary);
 }
 
+/* Workspace icon: the chosen accent, or the surrounding ink when none is set.
+   Each accent reads one step lighter in dark mode so it keeps contrast over
+   the sidebar fill. An archived group's icon takes the same caption step as
+   its archived title, whatever its accent. */
+.workspaceIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsh-workspace-accent, currentColor);
+}
+
+.workspaceIcon[data-accent='blue'] { --dsh-workspace-accent: var(--dsw-static-blue-500); }
+.workspaceIcon[data-accent='green'] { --dsh-workspace-accent: var(--dsw-static-green-500); }
+.workspaceIcon[data-accent='amber'] { --dsh-workspace-accent: var(--dsw-static-amber-500); }
+.workspaceIcon[data-accent='red'] { --dsh-workspace-accent: var(--dsw-static-red-500); }
+.workspaceIcon[data-accent='neutral'] { --dsh-workspace-accent: var(--dsw-static-neutral-500); }
+
+body[data-ds-dark-theme] .workspaceIcon[data-accent='blue'] { --dsh-workspace-accent: var(--dsw-static-blue-400); }
+body[data-ds-dark-theme] .workspaceIcon[data-accent='green'] { --dsh-workspace-accent: var(--dsw-static-green-400); }
+body[data-ds-dark-theme] .workspaceIcon[data-accent='amber'] { --dsh-workspace-accent: var(--dsw-static-amber-400); }
+body[data-ds-dark-theme] .workspaceIcon[data-accent='red'] { --dsh-workspace-accent: var(--dsw-static-red-400); }
+body[data-ds-dark-theme] .workspaceIcon[data-accent='neutral'] { --dsh-workspace-accent: var(--dsw-static-neutral-400); }
+
+.workspaceIcon[data-archived] {
+  --dsh-workspace-accent: var(--dsw-alias-label-caption);
+}
+
+/* One emoji grapheme sized to the 16px glyph beside it; the color-emoji
+   families keep it from falling back to a monochrome text glyph. */
+.workspaceEmoji {
+  font-size: 14px;
+  line-height: 1;
+  font-family: system-ui, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji';
+}
+
 
 /* Project leading slot: folder by default, expand arrow on row hover. */
 .projectRow .chevron { display: none; }

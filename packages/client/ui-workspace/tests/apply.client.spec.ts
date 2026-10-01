@@ -4,13 +4,15 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import type {
   SessionListState, SessionReference, SessionSummary,
 } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { WorkspaceId, WorkspaceSnapshot, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import {
+  type WorkspaceId, type WorkspaceSnapshot, type WorkspaceView, workspaceIconRef,
+} from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { StoredEntry } from '@deepseek-ai/dsh-client-ui-slots'
 import { RemoteError, TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
-import { apply, inject } from '@deepseek-ai/dsh-client-ui-workspace/client'
+import { apply, Config, inject } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { WorkspaceBrowserInjected, WorkspacePickerInjected } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import {
   type ArchiveSessionInjected, type ForkSessionInjected, menuOpenStateFactory, type MoveSessionInjected,
@@ -103,6 +105,7 @@ async function bench() {
   const initializeDefault = vi.fn(async (): Promise<WorkspaceView | undefined> => undefined)
   const archiveWorkspace = vi.fn(async (_workspaceId: WorkspaceId, _options?: { stopActivity?: boolean }) => undefined)
   const unarchiveWorkspace = vi.fn(async (_workspaceId: WorkspaceId) => undefined)
+  const setAppearance = vi.fn(async (workspaceId: WorkspaceId, appearance: object) => ({ ...workspace(workspaceId, []), appearance }))
   const moveSession = vi.fn(async (_sessionId: SessionId, workspaceId?: WorkspaceId) => ({
     workspace: workspaceId === undefined ? undefined : workspaceSnapshot.items.find(item => item.workspaceId === workspaceId),
     previousWorkspaceId: workspaceSnapshot.items.find(item => item.sessionIds.includes(_sessionId))?.workspaceId,
@@ -118,6 +121,7 @@ async function bench() {
     unarchiveSession: vi.fn(async () => undefined),
     archiveWorkspace,
     unarchiveWorkspace,
+    setAppearance,
     moveSession,
     pinSession,
     unpinSession,
@@ -148,7 +152,7 @@ async function bench() {
   return {
     ctx, slots: ctx.get('slots') as SlotRegistry, locale, create, rename,
     retain, using, selectPanel, search, renameSession, binding, fork, pickDirectory, pinSession, unpinSession,
-    workspacesSubscribe, initializeDefault, archiveWorkspace, unarchiveWorkspace, moveSession,
+    workspacesSubscribe, initializeDefault, archiveWorkspace, unarchiveWorkspace, setAppearance, moveSession,
     setWorkspaces: (snapshot: WorkspaceSnapshot): void => { workspaceSnapshot = snapshot },
     setSessions: (snapshot: SessionListState): void => { sessionSnapshot = snapshot },
   }
@@ -754,12 +758,37 @@ describe('ui-workspace apply', () => {
     expect(browser.searchResultLimit).toBe(20)
     await browser.renameWorkspace('ws' as never, 'renamed')
     expect(b.rename).toHaveBeenCalledWith('ws', 'renamed')
+    await browser.setWorkspaceAppearance('ws' as never, { color: 'blue', icon: 'icon:code' })
+    expect(b.setAppearance).toHaveBeenCalledWith('ws', { color: 'blue', icon: 'icon:code' })
     await browser.createWorkspace({ path: '/tmp/browser-project' })
     expect(b.create).toHaveBeenCalledWith({ path: '/tmp/browser-project' })
+    // Without configuration every Workspace that chose no icon renders the folder.
+    expect(browser.defaultIcon).toBeUndefined()
 
     const picker = faceOf(b.slots.entries('conversation.hero.workspace')[0]!) as WorkspacePickerInjected
     await picker.createWorkspace({ path: '/tmp/project' })
     expect(b.create).toHaveBeenCalledWith({ path: '/tmp/project' })
+    expect(picker.defaultIcon).toBeUndefined()
+  })
+
+  it('hands a configured default icon to both surfaces and refuses a malformed one at load', async () => {
+    // The schema passes a well-formed reference through and defaults to no icon.
+    expect(Config({})).toEqual({})
+    expect(Config({ defaultIcon: workspaceIconRef('icon:code') })).toEqual({ defaultIcon: 'icon:code' })
+    const b = await bench()
+    declare(b.slots, 'sidebar.workspaces', 'conversation.hero.workspace')
+    await b.ctx.plugin({ inject: [...inject], apply, Config }, { defaultIcon: workspaceIconRef('emoji:🚀') }).await()
+    const browser = faceOf(b.slots.entries('sidebar.workspaces')[0]!) as WorkspaceBrowserInjected
+    const picker = faceOf(b.slots.entries('conversation.hero.workspace')[0]!) as WorkspacePickerInjected
+    expect(browser.defaultIcon).toBe('emoji:🚀')
+    expect(picker.defaultIcon).toBe('emoji:🚀')
+    // An id outside the curated set, a two-grapheme emoji, a bare word, and a
+    // non-string all fail the schema the loader runs before `apply`.
+    for (const defaultIcon of ['icon:nope', 'emoji:🚀🚀', 'folder']) {
+      expect(() => Config({ defaultIcon } as never))
+        .toThrow(`defaultIcon: expected icon:<curated id> or emoji:<one grapheme>, got '${defaultIcon}'`)
+    }
+    expect(() => Config({ defaultIcon: 7 } as never)).toThrow('expected string')
   })
 
   it('declares the browser child slots and reports directory-flow occupancy per surface', async () => {

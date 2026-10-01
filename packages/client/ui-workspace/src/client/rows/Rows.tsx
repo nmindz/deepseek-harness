@@ -3,7 +3,7 @@
  * all data and callbacks arrive via props. Hover swaps (folder->chevron,
  * time->ellipsis, action buttons) are CSS-only, and a session row's clipped
  * title marquees programmatically while the row is hovered. A Workspace row's
- * menu offers Rename, Archive or Unarchive, and Delete. A Session row's "..." menu and
+ * menu offers Rename, Change icon…, Archive or Unarchive, and Delete. A Session row's "..." menu and
  * its hover buttons are the `sidebar.workspaces.session.menu.item` and
  * `sidebar.workspaces.session.row.action` lists, rendered through the
  * browser's `renderSlot` with the menu's open state as the occurrence's hook
@@ -14,17 +14,19 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import clsx from 'clsx'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
+import type { WorkspaceIconRef } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import {
   HoverCard, IconArchiveOutlineRegular, IconEditOutlineRegular,
-  IconEllipsisOutlineRegular, IconFolderCloseRegular, IconFolderOpenRegular,
-  IconNewChatOutlineRegular, IconPinFillRegular, IconTrashOutlineRegular,
-  IconTriangleRightFillRegular, IconUnarchiveOutlineRegular, Menu, relativeTime, StateDot, Tooltip,
+  IconEllipsisOutlineRegular, IconNewChatOutlineRegular, IconPersonalizationOutlineRegular, IconPinFillRegular,
+  IconTrashOutlineRegular, IconTriangleRightFillRegular, IconUnarchiveOutlineRegular, Menu, relativeTime,
+  StateDot, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ShortcutCatalogEntry } from '@deepseek-ai/dsh-client-shortcuts/client'
 import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import { abbreviateHomePath } from '@deepseek-ai/dsh-util-workspace-path'
 import type { MenuOpenState, WorkspaceBrowserProps } from '../contract/slots.ts'
 import type { GroupNode, SearchResultNode, SessionNode } from '../tree.ts'
+import { WorkspaceIcon } from './WorkspaceIcon.tsx'
 import css from './Rows.module.css'
 
 /** The standard locale seat, prop-passed from the browser root. */
@@ -216,27 +218,40 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): 'before' |
  * group reads dimmed like an archived session row, offers Unarchive in place
  * of Archive, and has no create button: the Host refuses a Session in it.
  * `containsCurrent` arrives on the node (derivation fact, no renderer scan).
+ * The leading glyph is the Workspace's chosen icon in its chosen accent, or
+ * the configured default icon, or the folder that swaps open/closed.
  * @param props.group - derived group node.
  * @param props.containsCurrentDescendant - highlight an ancestor even when its subtree is collapsed.
  * @param props.onToggle - expand/collapse the group.
  * @param props.onCreate - start a frontend Session inside this Workspace.
  * @param props.drag - optional workspace-row drag wiring.
  * @param props.home - host account home for POSIX hover-path abbreviation.
+ * @param props.defaultIcon - plugin-configured icon for Workspaces that chose none.
  * @param props.t - the browser root's locale seat.
  * @returns the row element.
  */
-export function ProjectRowItem({ group, containsCurrentDescendant = false, onToggle, onCreate, actions, drag, home, newShortcut, t }: {
+export function ProjectRowItem({
+  group, containsCurrentDescendant = false, onToggle, onCreate, actions, drag, home, defaultIcon, newShortcut, t,
+}: {
   group: GroupNode
   newShortcut?: ShortcutCatalogEntry | undefined
   containsCurrentDescendant?: boolean
   onToggle: () => void
   onCreate: () => void
   /** Real-Workspace actions; absent for the ungrouped bucket (no menu shown). */
-  actions?: { rename: () => void; archive: () => void; unarchive: () => void; delete: () => void } | undefined
+  actions?: {
+    rename: () => void
+    changeIcon: () => void
+    archive: () => void
+    unarchive: () => void
+    delete: () => void
+  } | undefined
   /** Present only for real Workspace rows in the grouped view. */
   drag?: WorkspaceRowDragProps | undefined
   /** Host account home; POSIX home-rooted hover paths display as `~`. */
   home?: string | undefined
+  /** Plugin-configured icon for Workspaces without a chosen one. */
+  defaultIcon?: WorkspaceIconRef | undefined
   t: RowTranslate
 }) {
   const row = group
@@ -246,6 +261,7 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
   const [menuOpen, setMenuOpen] = useState(false)
   const workspaceMenuItems = [
     { id: 'rename', label: t('rename'), icon: <IconEditOutlineRegular /> },
+    { id: 'change-icon', label: t('menu.changeIcon'), icon: <IconPersonalizationOutlineRegular /> },
     row.archived
       ? { id: 'unarchive', label: t('menu.unarchiveWorkspace'), icon: <IconUnarchiveOutlineRegular /> }
       : { id: 'archive', label: t('menu.archiveWorkspace'), icon: <IconArchiveOutlineRegular /> },
@@ -270,7 +286,13 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
       onDragEnd={drag?.end}
     >
       <span className={clsx(css.slot, css.folder, active && css.folderActive)}>
-        {row.expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />}
+        <WorkspaceIcon
+          appearance={row.appearance}
+          defaultIcon={defaultIcon}
+          expanded={row.expanded}
+          archived={row.archived}
+          emojiLabel={t('icon.emoji.aria')}
+        />
       </span>
       <span className={clsx(css.slot, css.chevron)}>
         <IconTriangleRightFillRegular className={clsx(css.arrow, row.expanded && css.arrowOpen)} />
@@ -288,6 +310,7 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
               setMenuOpen(false)
               switch (id) {
                 case 'rename': actions.rename(); break
+                case 'change-icon': actions.changeIcon(); break
                 case 'archive': actions.archive(); break
                 case 'unarchive': actions.unarchive(); break
                 case 'delete': actions.delete(); break

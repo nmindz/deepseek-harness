@@ -678,6 +678,88 @@
   color: var(--dsw-alias-state-business-primary);
 }
 
+/* The Change icon… dialog: a preview at Workspace-row size, the accent strip,
+   the glyph grid, then the emoji field. Chips and cells are 28px radios; the
+   checked one takes the move dialog's selected fill plus a 1px business ring. */
+.appearancePreview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  margin-bottom: 12px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.appearancePreview > :first-child {
+  flex: none;
+  width: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.appearancePreviewTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.appearanceStrip {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.appearanceGrid {
+  display: grid;
+  grid-template-columns: repeat(var(--dsh-appearance-grid-columns), 28px);
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.appearanceChip,
+.appearanceCell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  cursor: pointer;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.appearanceChip:hover,
+.appearanceCell:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.appearanceChip[aria-checked='true'],
+.appearanceCell[aria-checked='true'] {
+  background: var(--dsw-alias-interactive-bg-active);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-state-business-primary);
+}
+
+.appearanceChip:disabled,
+.appearanceCell:disabled {
+  cursor: default;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+.appearanceChip:focus-visible,
+.appearanceCell:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .wide {
     animation: none;

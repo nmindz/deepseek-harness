@@ -4,8 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { bindSnapshotSelector, makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
 import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
-import type {
-  WorkspaceId, WorkspaceSnapshot, WorkspaceView,
+import {
+  type WorkspaceAppearance, type WorkspaceId, type WorkspaceSnapshot, type WorkspaceView, workspaceIconRef,
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
@@ -134,6 +134,8 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}) {
     notifyArchivedNotOpenable: vi.fn(),
     renameWorkspace: vi.fn(async () => {}),
     deleteWorkspace: vi.fn(async () => {}),
+    setWorkspaceAppearance: vi.fn(async () => {}),
+    defaultIcon: undefined,
     archiveWorkspace: vi.fn(),
     unarchiveWorkspace: vi.fn(),
     unarchiveSession: vi.fn(async () => {}),
@@ -2501,6 +2503,225 @@ describe('WorkspaceBrowser', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭' }))
     expect(deleteWorkspace).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog', { name: '删除工作区' })).toBeNull()
+  })
+
+  describe('Change icon…', () => {
+    const emoji = (grapheme: string) => workspaceIconRef(`emoji:${grapheme}`)
+    const styled = (appearance?: WorkspaceAppearance): WorkspaceView => ({
+      ...workspace('alpha', [], 'Alpha'),
+      ...(appearance === undefined ? {} : { appearance }),
+    })
+    const openPicker = (name = 'Alpha'): HTMLElement => {
+      fireEvent.click(screen.getByRole('button', { name: `工作区“${name}”的操作` }))
+      fireEvent.click(screen.getByRole('menuitem', { name: '更改图标…' }))
+      return screen.getByRole('dialog', { name: '更改图标' })
+    }
+    const radio = (group: string, name: string): HTMLButtonElement =>
+      within(screen.getByRole('radiogroup', { name: group })).getByRole<HTMLButtonElement>('radio', { name })
+    const checkedIn = (group: string): string[] => within(screen.getByRole('radiogroup', { name: group }))
+      .getAllByRole('radio').filter(item => item.getAttribute('aria-checked') === 'true')
+      .map(item => item.getAttribute('aria-label') ?? '')
+    const save = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: '保存' })
+
+    it('opens with the current appearance in the menu position after Rename, and Save waits for a change', () => {
+      mount({ useWorkspaces: hook(workspaceState([styled({ color: 'blue', icon: 'icon:code' })])) })
+      fireEvent.click(screen.getByRole('button', { name: '工作区“Alpha”的操作' }))
+      expect(screen.getAllByRole('menuitem').map(item => item.textContent))
+        .toEqual(['重命名', '更改图标…', '归档工作区', '删除工作区'])
+      fireEvent.click(screen.getByRole('menuitem', { name: '更改图标…' }))
+      const dialog = screen.getByRole('dialog', { name: '更改图标' })
+      expect(dialog.textContent).toContain('Alpha')
+      expect(checkedIn('颜色')).toEqual(['蓝色'])
+      expect(checkedIn('图标')).toEqual(['代码'])
+      expect(within(screen.getByRole('radiogroup', { name: '图标' })).getAllByRole('radio')).toHaveLength(19)
+      expect(screen.getByLabelText<HTMLInputElement>('表情符号').value).toBe('')
+      expect(save().disabled).toBe(true)
+      fireEvent.click(radio('颜色', '绿色'))
+      expect(checkedIn('颜色')).toEqual(['绿色'])
+      expect(save().disabled).toBe(false)
+      // Back to the opened appearance: nothing to save again.
+      fireEvent.click(radio('颜色', '蓝色'))
+      expect(save().disabled).toBe(true)
+      fireEvent.click(radio('图标', '地球'))
+      expect(checkedIn('图标')).toEqual(['地球'])
+      expect(save().disabled).toBe(false)
+    })
+
+    it('saves the picked color and glyph, blocks dismissal while saving, and closes on success', async () => {
+      let resolveSave!: () => void
+      const setWorkspaceAppearance = vi.fn(() => new Promise<void>((resolve) => { resolveSave = resolve }))
+      mount({ useWorkspaces: hook(workspaceState([styled()])), setWorkspaceAppearance })
+      openPicker()
+      expect(checkedIn('颜色')).toEqual(['默认'])
+      expect(checkedIn('图标')).toEqual([])
+      fireEvent.click(radio('颜色', '绿色'))
+      fireEvent.click(radio('图标', '地球'))
+      fireEvent.click(save())
+      expect(setWorkspaceAppearance).toHaveBeenCalledWith(wid('alpha'), { color: 'green', icon: 'icon:globe' })
+      expect(screen.getByRole('status').textContent).toBe('正在保存…')
+      expect(save().disabled).toBe(true)
+      expect(screen.getByLabelText<HTMLInputElement>('表情符号').disabled).toBe(true)
+      fireEvent.keyDown(document, { key: 'Escape' })
+      fireEvent.click(screen.getByRole('button', { name: '取消' }))
+      expect(screen.getByRole('dialog', { name: '更改图标' })).toBeTruthy()
+      await act(async () => { resolveSave() })
+      expect(screen.queryByRole('dialog', { name: '更改图标' })).toBeNull()
+    })
+
+    it('one emoji selects itself and clears the glyph check; more than one is refused in place; clearing withdraws it', () => {
+      const setWorkspaceAppearance = vi.fn(async () => {})
+      mount({ useWorkspaces: hook(workspaceState([styled({ icon: 'icon:code' })])), setWorkspaceAppearance })
+      openPicker()
+      const field = screen.getByLabelText<HTMLInputElement>('表情符号')
+      fireEvent.change(field, { target: { value: '🎯' } })
+      expect(checkedIn('图标')).toEqual([])
+      expect(screen.getAllByRole('img', { name: '工作区表情图标' })[0]?.textContent).toBe('🎯')
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(save().disabled).toBe(false)
+      fireEvent.change(field, { target: { value: '🎯🎯' } })
+      expect(screen.getByRole('alert').textContent).toBe('只能使用一个表情符号')
+      expect(field.getAttribute('aria-invalid')).toBe('true')
+      expect(save().disabled).toBe(true)
+      // The invalid text left the draft on the last valid emoji.
+      expect(screen.getAllByRole('img', { name: '工作区表情图标' })[0]?.textContent).toBe('🎯')
+      fireEvent.change(field, { target: { value: '' } })
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(screen.queryByRole('img', { name: '工作区表情图标' })).toBeNull()
+      // Withdrawn to no icon: that differs from the opened glyph, so Save is on.
+      expect(save().disabled).toBe(false)
+      fireEvent.change(field, { target: { value: '🚀' } })
+      // Picking a glyph clears the field again; the emoji then replaces it.
+      fireEvent.click(radio('图标', '代码'))
+      expect(field.value).toBe('')
+      expect(checkedIn('图标')).toEqual(['代码'])
+      fireEvent.change(field, { target: { value: '🚀' } })
+      fireEvent.click(save())
+      expect(setWorkspaceAppearance).toHaveBeenCalledWith(wid('alpha'), { icon: emoji('🚀') })
+    })
+
+    it('opens seeded with a stored emoji, and an empty field alone changes nothing', () => {
+      mount({ useWorkspaces: hook(workspaceState([styled({ icon: emoji('🎯'), color: 'red' })])) })
+      openPicker()
+      const field = screen.getByLabelText<HTMLInputElement>('表情符号')
+      expect(field.value).toBe('🎯')
+      expect(checkedIn('图标')).toEqual([])
+      expect(save().disabled).toBe(true)
+      fireEvent.click(radio('图标', '文件夹'))
+      expect(field.value).toBe('')
+      // Text that is not one emoji leaves the glyph checked, and clearing it withdraws nothing.
+      fireEvent.change(field, { target: { value: 'ab' } })
+      expect(screen.getByRole('alert').textContent).toBe('只能使用一个表情符号')
+      expect(checkedIn('图标')).toEqual(['文件夹'])
+      fireEvent.change(field, { target: { value: '' } })
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(checkedIn('图标')).toEqual(['文件夹'])
+    })
+
+    it('Reset returns both fields to the default and saves an empty appearance', () => {
+      const setWorkspaceAppearance = vi.fn(async () => {})
+      mount({ useWorkspaces: hook(workspaceState([styled({ color: 'amber', icon: emoji('🎯') })])), setWorkspaceAppearance })
+      openPicker()
+      expect(checkedIn('颜色')).toEqual(['琥珀色'])
+      fireEvent.click(screen.getByRole('button', { name: '恢复默认' }))
+      expect(checkedIn('颜色')).toEqual(['默认'])
+      expect(checkedIn('图标')).toEqual([])
+      expect(screen.getByLabelText<HTMLInputElement>('表情符号').value).toBe('')
+      fireEvent.click(save())
+      expect(setWorkspaceAppearance).toHaveBeenCalledWith(wid('alpha'), {})
+    })
+
+    it('shows the configured default icon in the preview of a Workspace without its own', () => {
+      mount({ useWorkspaces: hook(workspaceState([styled()])), defaultIcon: emoji('🚀') })
+      openPicker()
+      expect(screen.getAllByRole('img', { name: '工作区表情图标' })[0]?.textContent).toBe('🚀')
+      expect(checkedIn('图标')).toEqual([])
+    })
+
+    it('arrow keys move the check within each radiogroup and Enter saves', () => {
+      const setWorkspaceAppearance = vi.fn(async () => {})
+      mount({ useWorkspaces: hook(workspaceState([styled()])), setWorkspaceAppearance })
+      openPicker()
+      // Keys go to the focused radio and bubble to its radiogroup.
+      const press = (key: string): void => { fireEvent.keyDown(document.activeElement as Element, { key }) }
+      // Only the checked chip is in the tab order; the strip wraps left to right.
+      expect(radio('颜色', '默认').tabIndex).toBe(0)
+      expect(radio('颜色', '蓝色').tabIndex).toBe(-1)
+      radio('颜色', '默认').focus()
+      press('ArrowRight')
+      expect(checkedIn('颜色')).toEqual(['蓝色'])
+      expect(document.activeElement).toBe(radio('颜色', '蓝色'))
+      press('ArrowLeft')
+      press('ArrowLeft')
+      expect(checkedIn('颜色')).toEqual(['灰色'])
+      // The one-row strip ignores vertical arrows, other keys, and a keydown that did not start on a chip.
+      press('ArrowDown')
+      press('ArrowUp')
+      press('Home')
+      fireEvent.keyDown(screen.getByRole('radiogroup', { name: '颜色' }), { key: 'ArrowRight' })
+      expect(checkedIn('颜色')).toEqual(['灰色'])
+      // With no glyph checked the first cell carries the tab stop; vertical arrows step a row and stop at the edges.
+      expect(radio('图标', '文件夹').tabIndex).toBe(0)
+      radio('图标', '文件夹').focus()
+      press('ArrowDown')
+      expect(checkedIn('图标')).toEqual(['计划'])
+      expect(document.activeElement).toBe(radio('图标', '计划'))
+      expect(radio('图标', '文件夹').tabIndex).toBe(-1)
+      press('ArrowUp')
+      expect(checkedIn('图标')).toEqual(['文件夹'])
+      press('ArrowUp')
+      expect(checkedIn('图标')).toEqual(['文件夹'])
+      press('ArrowLeft')
+      expect(checkedIn('图标')).toEqual(['闹钟'])
+      press('ArrowDown')
+      expect(checkedIn('图标')).toEqual(['闹钟'])
+      press('ArrowRight')
+      expect(checkedIn('图标')).toEqual(['文件夹'])
+      press('Enter')
+      expect(setWorkspaceAppearance).toHaveBeenCalledWith(wid('alpha'), { color: 'neutral', icon: 'icon:folder' })
+    })
+
+    it('Enter does nothing while Save is disabled or during IME composition', () => {
+      const setWorkspaceAppearance = vi.fn(async () => {})
+      mount({ useWorkspaces: hook(workspaceState([styled()])), setWorkspaceAppearance })
+      openPicker()
+      const field = screen.getByLabelText<HTMLInputElement>('表情符号')
+      fireEvent.keyDown(field, { key: 'Enter' })
+      fireEvent.change(field, { target: { value: '🎯' } })
+      fireEvent.keyDown(field, { key: 'Enter', isComposing: true })
+      fireEvent.keyDown(field, { key: 'a' })
+      expect(setWorkspaceAppearance).not.toHaveBeenCalled()
+      fireEvent.keyDown(field, { key: 'Enter' })
+      expect(setWorkspaceAppearance).toHaveBeenCalledWith(wid('alpha'), { icon: emoji('🎯') })
+    })
+
+    it('keeps a refused save in place with the draft, and Cancel, Escape, and Close dismiss it', async () => {
+      const setWorkspaceAppearance = vi.fn()
+        .mockRejectedValueOnce(new Error('appearance refused'))
+        .mockRejectedValueOnce('denied')
+      mount({ useWorkspaces: hook(workspaceState([styled()])), setWorkspaceAppearance })
+      openPicker()
+      fireEvent.click(radio('颜色', '红色'))
+      fireEvent.click(save())
+      await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('appearance refused') })
+      expect(checkedIn('颜色')).toEqual(['红色'])
+      // Editing clears the notice; a second refusal that is not an Error reads as text.
+      fireEvent.click(radio('图标', '盾牌'))
+      expect(screen.queryByRole('alert')).toBeNull()
+      fireEvent.click(save())
+      await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('denied') })
+      fireEvent.click(screen.getByRole('button', { name: '取消' }))
+      expect(screen.queryByRole('dialog', { name: '更改图标' })).toBeNull()
+      // Reopening starts from the stored appearance, not the refused draft.
+      openPicker()
+      expect(checkedIn('颜色')).toEqual(['默认'])
+      expect(screen.queryByRole('alert')).toBeNull()
+      fireEvent.keyDown(document, { key: 'Escape' })
+      expect(screen.queryByRole('dialog', { name: '更改图标' })).toBeNull()
+      openPicker()
+      fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+      expect(screen.queryByRole('dialog', { name: '更改图标' })).toBeNull()
+      expect(setWorkspaceAppearance).toHaveBeenCalledTimes(2)
+    })
   })
 
   it('search hides drag affordances (rows are not draggable during search)', () => {

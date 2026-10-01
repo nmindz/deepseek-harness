@@ -27,7 +27,7 @@ import {
 import type {
   SessionListState, SessionSearchResultItem,
 } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type { WorkspaceAppearance, WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { workspaceDisplayTitle } from '@deepseek-ai/dsh-api-workspace-controller/default-workspace'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
@@ -42,6 +42,7 @@ import {
   pinCurrentBlank, reconcileManualOrder, sessionArchivedBy, sessionMemberIds, UNGROUPED_KEY,
 } from '../tree.ts'
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './Rows.tsx'
+import { WorkspaceAppearancePicker } from './WorkspaceAppearancePicker.tsx'
 import { AnimatedRows } from './AnimatedRows.tsx'
 import { FLAT_SESSION_ORDER_KEY, type SessionGroupBy } from '../stores.ts'
 import { WorkspacePickFlow } from '../WorkspacePicker.tsx'
@@ -280,7 +281,7 @@ function workspaceGroupHalf(e: { clientY: number; currentTarget: HTMLElement }):
 type SessionTreeProps = Pick<
   WorkspaceBrowserProps,
   'useSessionStatus' | 'startSession' | 'open'
-  | 'insertWorkspaceBefore' | 'archiveWorkspace' | 'unarchiveWorkspace' | 't' | 'usePanelInfo'
+  | 'insertWorkspaceBefore' | 'archiveWorkspace' | 'unarchiveWorkspace' | 'defaultIcon' | 't' | 'usePanelInfo'
 > & PropsRenderSlots<
   | 'sidebar.workspaces.session.menu.item'
   | 'sidebar.workspaces.session.row.action'
@@ -316,6 +317,8 @@ type SessionTreeProps = Pick<
   onRenameRequest: (workspaceId: WorkspaceId, currentTitle: string) => void
   /** Open the browser-owned delete-confirmation dialog for a real Workspace group. */
   onDeleteRequest: (workspaceId: WorkspaceId, currentTitle: string) => void
+  /** Open the browser-owned Change icon… dialog for a real Workspace group, seeded with its current appearance. */
+  onChangeIconRequest: (workspaceId: WorkspaceId, displayTitle: string, appearance: WorkspaceAppearance | undefined) => void
   /** Open the rename dialog from a row title double-click. */
   onSessionRenameRequest: (sessionId: SessionNode['id'], currentTitle: string) => void
   /** One Session chosen from search that must be exposed and scrolled into view. */
@@ -345,11 +348,11 @@ function SessionTree({
   list, useSessionStatus, startSession, open, workspaces, ungroupedSessionIds,
   rowState, onLeaveArchivedOnly,
   workspaceReady, animationResetKey, usePanelInfo,
-  onRenameRequest, onDeleteRequest, onSessionRenameRequest,
+  onRenameRequest, onDeleteRequest, onChangeIconRequest, onSessionRenameRequest,
   renderSlot,
   insertWorkspaceBefore, archiveWorkspace, unarchiveWorkspace,
   nestWorkspaces, groupExpansion, setGroupExpanded,
-  setSessionOrder, home, t,
+  setSessionOrder, home, defaultIcon, t,
   revealSessionId, onSessionRevealed, shortcuts,
 }: SessionTreeProps) {
   const panelActive = usePanelInfo(info => info.activePanelId !== null)
@@ -561,6 +564,7 @@ function SessionTree({
           group={group}
           containsCurrentDescendant={currentAncestors.has(group.key)}
           home={home}
+          defaultIcon={defaultIcon}
           t={t}
           onToggle={() => {
             if (group.expanded) {
@@ -581,6 +585,10 @@ function SessionTree({
               rename: () => {
               /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
                 if (group.workspaceId !== undefined) onRenameRequest(group.workspaceId, group.label)
+              },
+              changeIcon: () => {
+              /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
+                if (group.workspaceId !== undefined) onChangeIconRequest(group.workspaceId, group.label, group.appearance)
               },
               archive: () => {
               /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
@@ -910,6 +918,8 @@ export function WorkspaceBrowser({
   notifyArchivedNotOpenable,
   renameWorkspace,
   deleteWorkspace,
+  setWorkspaceAppearance,
+  defaultIcon,
   archiveWorkspace,
   unarchiveWorkspace,
   insertWorkspaceBefore,
@@ -1235,6 +1245,19 @@ export function WorkspaceBrowser({
     })
   }
 
+  // Change icon… dialog (browser-owned like Rename): the target carries the
+  // appearance the dialog opened on and the label the preview shows.
+  const [appearanceTarget, setAppearanceTarget] = useState<{
+    workspaceId: WorkspaceId
+    title: string
+    appearance: WorkspaceAppearance | undefined
+  } | null>(null)
+  const saveAppearance = async (appearance: WorkspaceAppearance): Promise<void> => {
+    /* v8 ignore next -- the dialog is absent without a target and its Save is disabled while saving. */
+    if (appearanceTarget === null) return
+    await setWorkspaceAppearance(appearanceTarget.workspaceId, appearance)
+  }
+
   // The search results' restore button; the row actions own the rest of the
   // Session verbs as slot entries.
   const onSessionUnarchive = (sessionId: SessionNode['id']) => {
@@ -1483,7 +1506,11 @@ export function WorkspaceBrowser({
                 revealSessionId={revealSessionId}
                 onSessionRevealed={acknowledgeSessionReveal}
                 home={home}
+                defaultIcon={defaultIcon}
                 t={t}
+                onChangeIconRequest={(workspaceId, title, appearance) => {
+                  setAppearanceTarget({ workspaceId, title, appearance })
+                }}
                 onRenameRequest={(workspaceId, displayTitle) => {
                   setRenameTarget({
                     workspaceId,
@@ -1560,6 +1587,16 @@ export function WorkspaceBrowser({
         {deleting && <div className={css.deleteStatus} role="status">{t('delete.pending')}</div>}
         {deleteError !== null && <div className={css.renameError} role="alert">{deleteError}</div>}
       </Modal>
+
+      <WorkspaceAppearancePicker
+        open={appearanceTarget !== null}
+        title={appearanceTarget?.title ?? ''}
+        appearance={appearanceTarget?.appearance}
+        defaultIcon={defaultIcon}
+        onClose={() => { setAppearanceTarget(null) }}
+        onSave={saveAppearance}
+        t={t}
+      />
       {shortcutState.forkError !== null && <Toast key={shortcutState.forkError.seq}
         text={t(shortcutState.forkError.reason === 'unavailable' ? 'shortcut.noCompletedTurn' : 'shortcut.forkFailed')}
         onDone={dismissForkError} />}

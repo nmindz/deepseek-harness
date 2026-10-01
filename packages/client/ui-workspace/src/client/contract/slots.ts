@@ -48,7 +48,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { SessionSearchResultItem } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { RemoteHostFacts } from '@deepseek-ai/dsh-api-remotes/client'
-import type { SessionActivity, WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type {
+  SessionActivity, WorkspaceAppearance, WorkspaceIconRef, WorkspaceId, WorkspaceView,
+} from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ShortcutCatalogEntry } from '@deepseek-ai/dsh-client-shortcuts/client'
 import type { WorkspaceShortcutState } from '../shortcuts.ts'
@@ -263,6 +265,13 @@ export type WorkspaceBrowserInjected = {
   renameWorkspace: (workspaceId: WorkspaceId, title: string) => Promise<void>
   /** Delete only a Host Workspace registration; directory and Session logs remain. */
   deleteWorkspace: (workspaceId: WorkspaceId) => Promise<void>
+  /**
+   * Replace a Workspace's accent color and icon; an empty object resets both
+   * to the default look. Resolves on durability; rejects with the Host's reason.
+   */
+  setWorkspaceAppearance: (workspaceId: WorkspaceId, appearance: WorkspaceAppearance) => Promise<void>
+  /** Plugin-configured icon rendered for every Workspace that chose none; undefined means the folder. */
+  defaultIcon: WorkspaceIconRef | undefined
   /**
    * Archive a Workspace into the registry-global set: the group keeps its
    * order slot and every Session it accounts is archived through it, each
@@ -595,6 +604,8 @@ export type WorkspaceBrowserProps =
 export type WorkspacePickerInjected = DirectoryPickingInjected & {
   /** Adopt a picked host directory as a real Workspace before targeting a Session. */
   createWorkspace: (input: { path: string }) => Promise<WorkspaceView>
+  /** Plugin-configured icon rendered for every listed Workspace that chose none; undefined means the folder. */
+  defaultIcon: WorkspaceIconRef | undefined
 }
 
 /**

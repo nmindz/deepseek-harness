@@ -8,7 +8,7 @@ import { type KeyboardEvent, useMemo, useState } from 'react'
 import { workspaceDisplayTitle } from '@deepseek-ai/dsh-api-workspace-controller/default-workspace'
 import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import {
-  Button, IconCheckOutlineRegular, IconFolderOpenOutlineRegular, IconQueueOutlineRegular, MenuItemButton, Modal,
+  Button, IconCheckOutlineRegular, IconFolderOpenOutlineRegular, IconQueueOutlineRegular, MenuItemButton, MenuSurface, Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   MoveSessionInjected, SessionMenuItemProps, SessionMoveDialogInjected, SessionMoveDialogProps, SessionMoveRequest,
@@ -167,7 +167,8 @@ function MoveForm({ request, options, moveSession, onSettle, t }: {
       {options.length === 0
         ? <div className={browserCss.deleteStatus}>{t('move.empty')}</div>
         : (
-          <div
+          <MenuSurface
+            compact
             className={browserCss.moveOptions}
             role="listbox"
             aria-label={t('move.options.aria')}
@@ -209,7 +210,7 @@ function MoveForm({ request, options, moveSession, onSettle, t }: {
                 </button>
               )
             })}
-          </div>
+          </MenuSurface>
         )}
       {request.cwd !== undefined && <div className={browserCss.deleteStatus}>{t('move.cwdNote', { cwd: request.cwd })}</div>}
       {moving && <div className={browserCss.deleteStatus} role="status">{t('move.pending')}</div>}

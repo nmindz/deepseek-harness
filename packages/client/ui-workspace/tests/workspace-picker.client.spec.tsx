@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import type { GlobalStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
-import type {
-  WorkspaceId, WorkspaceSnapshot, WorkspaceView,
+import {
+  type WorkspaceIconRef, type WorkspaceId, type WorkspaceSnapshot, type WorkspaceView, workspaceIconRef,
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { bindSnapshotSelector, makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
@@ -88,6 +88,7 @@ function mount(
   items: readonly WorkspaceView[] = [workspace('alpha', 'Alpha')],
   createWorkspace = vi.fn(),
   occupancy = occupancySource(),
+  defaultIcon?: WorkspaceIconRef,
 ) {
   const onPick = vi.fn()
   const onClose = vi.fn()
@@ -105,6 +106,7 @@ function mount(
       onPick={onPick}
       onClose={onClose}
       createWorkspace={createWorkspace}
+      defaultIcon={defaultIcon}
       useDirectoryFlow={occupancy.useDirectoryFlow}
       renderSlot={renderSlot}
       t={t}
@@ -130,6 +132,24 @@ describe('WorkspacePicker', () => {
     expect(entries).toHaveLength(2)
     fireEvent.click(entries[1]!)
     expect(b.onPick).toHaveBeenCalledWith(wid('beta'))
+  })
+
+  it('shows each Workspace with its chosen icon and accent, falling back to the configured default icon', () => {
+    mount([
+      { ...workspace('alpha', 'Alpha'), appearance: { color: 'green', icon: workspaceIconRef('emoji:🎯') } },
+      { ...workspace('beta', 'Beta'), appearance: { color: 'red' } },
+      workspace('gamma', 'Gamma'),
+    ], vi.fn(), occupancySource(), workspaceIconRef('emoji:🚀'))
+    const alpha = screen.getByRole('menuitem', { name: /Alpha/ })
+    expect(within(alpha).getByRole('img', { name: '工作区表情图标' }).textContent).toBe('🎯')
+    expect(within(alpha).getByRole('img', { name: '工作区表情图标' }).parentElement?.getAttribute('data-accent')).toBe('green')
+    const beta = screen.getByRole('menuitem', { name: /Beta/ })
+    // A color alone tints the default icon.
+    expect(within(beta).getByRole('img', { name: '工作区表情图标' }).textContent).toBe('🚀')
+    expect(within(beta).getByRole('img', { name: '工作区表情图标' }).parentElement?.getAttribute('data-accent')).toBe('red')
+    const gamma = screen.getByRole('menuitem', { name: /Gamma/ })
+    expect(within(gamma).getByRole('img', { name: '工作区表情图标' }).textContent).toBe('🚀')
+    expect(within(gamma).getByRole('img', { name: '工作区表情图标' }).parentElement?.hasAttribute('data-accent')).toBe(false)
   })
 
   it('opens the composed directory flow, adopts its picked path, and selects the returned Workspace', async () => {
@@ -224,7 +244,7 @@ describe('WorkspacePicker', () => {
         useSessionStatus={hook(noPendingInteraction)}
         useSessionRetainInfo={() => undefined}
         usePanelInfo={usePanelInfo} useResource={useResource}
-        onPick={vi.fn()} onClose={vi.fn()} createWorkspace={vi.fn()}
+        onPick={vi.fn()} onClose={vi.fn()} createWorkspace={vi.fn()} defaultIcon={undefined}
         useDirectoryFlow={occupancySource().useDirectoryFlow} renderSlot={renderSlot} t={t}
       />,
     )
@@ -242,7 +262,7 @@ describe('WorkspacePicker', () => {
         useSessionStatus={hook(noPendingInteraction)}
         useSessionRetainInfo={() => undefined}
         usePanelInfo={usePanelInfo} useResource={useResource}
-        onPick={vi.fn()} onClose={vi.fn()} createWorkspace={vi.fn()}
+        onPick={vi.fn()} onClose={vi.fn()} createWorkspace={vi.fn()} defaultIcon={undefined}
         useDirectoryFlow={occupancySource().useDirectoryFlow} renderSlot={renderSlot} t={t}
       />,
     )

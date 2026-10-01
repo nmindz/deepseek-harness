@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, createEvent, fireEvent, render, screen } from '@testing-library/react'
-import type { ComponentProps } from 'react'
-import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type { ComponentProps, ReactElement } from 'react'
+import {
+  type WorkspaceIconRef, type WorkspaceId, WORKSPACE_ICON_IDS, workspaceIconRef,
+} from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
 import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts'
-import { MenuItemButton } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  IconCodeOutlineRegular, IconFolderCloseRegular, IconFolderOpenRegular, IconSparkleRegular, MenuItemButton,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { MenuOpenState, SessionRowOwnerProps } from '../src/client/contract/slots.ts'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
@@ -14,6 +18,7 @@ import type { RowDragProps } from '../src/client/rows/Rows.tsx'
 import {
   ProjectRowItem, SearchResultItem, SessionNodeItem as SessionNodeItemComponent,
 } from '../src/client/rows/Rows.tsx'
+import { WorkspaceIcon } from '../src/client/rows/WorkspaceIcon.tsx'
 import type { GroupNode, SearchResultNode, SessionNode } from '../src/client/tree.ts'
 import { en, zh } from '../src/client/locales.ts'
 
@@ -146,7 +151,7 @@ describe('workspace browser rows', () => {
     const onCreate = vi.fn()
     const group: GroupNode = {
       key: 'project', workspaceId: wid('project'), cwd: '/projects/project', createdAt: 0, label: 'Project',
-      sessionCount: 1, expanded: true, containsCurrent: true, archived: false, sessions: [],
+      sessionCount: 1, expanded: true, containsCurrent: true, archived: false, appearance: undefined, sessions: [],
     }
     render(<ProjectRowItem group={group} onToggle={onToggle} onCreate={onCreate} t={t}
       newShortcut={{ id: 'session.new' as never, label: 'New', aliases: [], binding: null,
@@ -428,19 +433,19 @@ describe('workspace browser rows', () => {
   })
 
   it('workspace row menu opens on the ellipsis, renames, archives, and shows the danger delete row after a separator', () => {
-    const actions = { rename: vi.fn(), archive: vi.fn(), unarchive: vi.fn(), delete: vi.fn() }
+    const actions = { rename: vi.fn(), changeIcon: vi.fn(), archive: vi.fn(), unarchive: vi.fn(), delete: vi.fn() }
     const onToggle = vi.fn()
     const group: GroupNode = {
       key: 'project', workspaceId: wid('project'), cwd: '/projects/project', createdAt: 0, label: 'Project',
-      sessionCount: 0, expanded: false, containsCurrent: false, archived: false, sessions: [],
+      sessionCount: 0, expanded: false, containsCurrent: false, archived: false, appearance: undefined, sessions: [],
     }
     render(<ProjectRowItem group={group} onToggle={onToggle} onCreate={vi.fn()} actions={actions} t={t} />)
     const openMenu = () => { fireEvent.click(screen.getByRole('button', { name: '工作区“Project”的操作' })) }
     openMenu()
     // Opening the menu neither toggles the group nor renames yet.
     expect(onToggle).not.toHaveBeenCalled()
-    // Rename · Archive workspace · ── · Delete workspace (danger).
-    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['重命名', '归档工作区', '删除工作区'])
+    // Rename · Change icon… · Archive workspace · ── · Delete workspace (danger).
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['重命名', '更改图标…', '归档工作区', '删除工作区'])
     expect(screen.queryByRole('menuitem', { name: '取消归档工作区' })).toBeNull()
     const separator = screen.getByRole('menu').querySelector('[role="separator"]')
     expect(separator?.nextElementSibling?.textContent).toBe('删除工作区')
@@ -448,6 +453,10 @@ describe('workspace browser rows', () => {
     expect(screen.getByRole('menuitem', { name: '归档工作区' }).className).not.toMatch(/danger/)
     fireEvent.click(screen.getByRole('menuitem', { name: '重命名' }))
     expect(actions.rename).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menu')).toBeNull()
+    openMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: '更改图标…' }))
+    expect(actions.changeIcon).toHaveBeenCalledOnce()
     expect(screen.queryByRole('menu')).toBeNull()
     openMenu()
     fireEvent.click(screen.getByRole('menuitem', { name: '归档工作区' }))
@@ -471,18 +480,18 @@ describe('workspace browser rows', () => {
   it('an archived workspace row reads dimmed, offers Unarchive in place of Archive, and has no New session button', () => {
     vi.useFakeTimers()
     try {
-      const actions = { rename: vi.fn(), archive: vi.fn(), unarchive: vi.fn(), delete: vi.fn() }
+      const actions = { rename: vi.fn(), changeIcon: vi.fn(), archive: vi.fn(), unarchive: vi.fn(), delete: vi.fn() }
       const onCreate = vi.fn()
       const group: GroupNode = {
         key: 'project', workspaceId: wid('project'), cwd: '/projects/project', createdAt: 0, label: 'Project',
-        sessionCount: 2, expanded: false, containsCurrent: false, archived: true, sessions: [],
+        sessionCount: 2, expanded: false, containsCurrent: false, archived: true, appearance: undefined, sessions: [],
       }
       render(<ProjectRowItem group={group} onToggle={vi.fn()} onCreate={onCreate} actions={actions} t={t} />)
       const row = screen.getByRole('treeitem')
       expect(row.className).toMatch(/archived/)
       expect(screen.queryByRole('button', { name: '在“Project”中新建会话' })).toBeNull()
       fireEvent.click(screen.getByRole('button', { name: '工作区“Project”的操作' }))
-      expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['重命名', '取消归档工作区', '删除工作区'])
+      expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['重命名', '更改图标…', '取消归档工作区', '删除工作区'])
       fireEvent.click(screen.getByRole('menuitem', { name: '取消归档工作区' }))
       expect(actions.unarchive).toHaveBeenCalledOnce()
       expect(actions.archive).not.toHaveBeenCalled()
@@ -504,7 +513,7 @@ describe('workspace browser rows', () => {
     try {
       const group: GroupNode = {
         key: 'project', workspaceId: wid('project'), cwd: '/projects/project', createdAt: 0, label: 'Project',
-        sessionCount: 0, expanded: false, containsCurrent: false, archived: false, sessions: [],
+        sessionCount: 0, expanded: false, containsCurrent: false, archived: false, appearance: undefined, sessions: [],
       }
       render(<ProjectRowItem group={group} onToggle={vi.fn()} onCreate={vi.fn()} t={t} />)
       fireEvent.pointerEnter(screen.getByRole('treeitem').parentElement as HTMLElement)
@@ -527,7 +536,7 @@ describe('workspace browser rows', () => {
     try {
       const group: GroupNode = {
         key: 'project', workspaceId: wid('project'), cwd: '/projects/project', createdAt: 0, label: 'Project',
-        sessionCount: 0, expanded: false, containsCurrent: false, archived: false, sessions: [],
+        sessionCount: 0, expanded: false, containsCurrent: false, archived: false, appearance: undefined, sessions: [],
       }
       render(<ProjectRowItem group={group} onToggle={vi.fn()} onCreate={vi.fn()} t={t} />)
       const row = screen.getByRole('treeitem')
@@ -560,7 +569,7 @@ describe('workspace browser rows', () => {
     try {
       const group: GroupNode = {
         key: 'project', workspaceId: wid('project'), cwd: '/projects/project', createdAt: 0, label: 'Project',
-        sessionCount: 0, expanded: false, containsCurrent: false, archived: false, sessions: [],
+        sessionCount: 0, expanded: false, containsCurrent: false, archived: false, appearance: undefined, sessions: [],
       }
       render(<ProjectRowItem group={group} onToggle={vi.fn()} onCreate={vi.fn()} t={t} />)
       const row = screen.getByRole('treeitem')
@@ -586,7 +595,7 @@ describe('workspace browser rows', () => {
     try {
       const group: GroupNode = {
         key: 'project', workspaceId: wid('project'), cwd: '/home/u/Documents/project', createdAt: 0, label: 'Project',
-        sessionCount: 0, expanded: false, containsCurrent: false, archived: false, sessions: [],
+        sessionCount: 0, expanded: false, containsCurrent: false, archived: false, appearance: undefined, sessions: [],
       }
       render(<ProjectRowItem group={group} home="/home/u" onToggle={vi.fn()} onCreate={vi.fn()} t={t} />)
       fireEvent.pointerEnter(screen.getByRole('treeitem').parentElement as HTMLElement)
@@ -606,7 +615,7 @@ describe('workspace browser rows', () => {
     try {
       const group: GroupNode = {
         key: 'project', workspaceId: wid('project'), cwd: undefined, createdAt: 0, label: 'Project',
-        sessionCount: 0, expanded: false, containsCurrent: false, archived: false, sessions: [],
+        sessionCount: 0, expanded: false, containsCurrent: false, archived: false, appearance: undefined, sessions: [],
       }
       render(<ProjectRowItem group={group} home="/home/u" onToggle={vi.fn()} onCreate={vi.fn()} t={t} />)
       fireEvent.pointerEnter(screen.getByRole('treeitem').parentElement as HTMLElement)
@@ -624,7 +633,7 @@ describe('workspace browser rows', () => {
     try {
       const group: GroupNode = {
         key: 'project', workspaceId: wid('project'), cwd: 'C:\\Users\\u\\project', createdAt: 0, label: 'Project',
-        sessionCount: 0, expanded: false, containsCurrent: false, archived: false, sessions: [],
+        sessionCount: 0, expanded: false, containsCurrent: false, archived: false, appearance: undefined, sessions: [],
       }
       render(<ProjectRowItem group={group} home="C:\\Users\\u" onToggle={vi.fn()} onCreate={vi.fn()} t={t} />)
       fireEvent.pointerEnter(screen.getByRole('treeitem').parentElement as HTMLElement)
@@ -638,7 +647,7 @@ describe('workspace browser rows', () => {
   it('ungrouped bucket renders no workspace menu', () => {
     const group: GroupNode = {
       key: '', workspaceId: undefined, cwd: undefined, createdAt: undefined, label: 'Ungrouped',
-      sessionCount: 0, expanded: false, containsCurrent: false, archived: false, sessions: [],
+      sessionCount: 0, expanded: false, containsCurrent: false, archived: false, appearance: undefined, sessions: [],
     }
     render(<ProjectRowItem group={group} onToggle={vi.fn()} onCreate={vi.fn()} t={t} />)
     expect(screen.queryByRole('button', { name: /工作区/ })).toBeNull()
@@ -1140,4 +1149,89 @@ it.each([['未命名', t], ['Untitled', tEn]])('labels unnamed search results as
     onUnarchive={vi.fn()} t={translate} />)
   fireEvent.click(screen.getByText(label))
   expect(onOpen).toHaveBeenCalledWith(result.id)
+})
+
+describe('WorkspaceIcon', () => {
+  // The reference markup of one icon, rendered on its own and torn down again.
+  const glyph = (element: ReactElement): string => {
+    const reference = render(element)
+    const markup = reference.container.querySelector('svg')?.outerHTML ?? ''
+    reference.unmount()
+    return markup
+  }
+  const svgOf = (container: HTMLElement): string | undefined => container.querySelector('svg')?.outerHTML
+  const emojiLabel = '工作区表情图标'
+  const emoji = (grapheme: string): WorkspaceIconRef => workspaceIconRef(`emoji:${grapheme}`)
+
+  it('renders the folder by default and swaps it open with the group', () => {
+    const view = render(<WorkspaceIcon expanded={false} emojiLabel={emojiLabel} />)
+    expect(svgOf(view.container)).toBe(glyph(<IconFolderCloseRegular />))
+    expect(view.container.firstElementChild?.hasAttribute('data-accent')).toBe(false)
+    view.rerender(<WorkspaceIcon expanded emojiLabel={emojiLabel} />)
+    expect(svgOf(view.container)).toBe(glyph(<IconFolderOpenRegular />))
+    // An explicit folder choice follows the same swap.
+    view.rerender(<WorkspaceIcon appearance={{ icon: 'icon:folder' }} expanded={false} emojiLabel={emojiLabel} />)
+    expect(svgOf(view.container)).toBe(glyph(<IconFolderCloseRegular />))
+  })
+
+  it('renders a chosen glyph without the open/closed swap and carries its accent', () => {
+    const view = render(<WorkspaceIcon appearance={{ icon: 'icon:code', color: 'blue' }} expanded={false} emojiLabel={emojiLabel} />)
+    expect(svgOf(view.container)).toBe(glyph(<IconCodeOutlineRegular />))
+    expect(view.container.firstElementChild?.getAttribute('data-accent')).toBe('blue')
+    view.rerender(<WorkspaceIcon appearance={{ icon: 'icon:code', color: 'blue' }} expanded emojiLabel={emojiLabel} />)
+    expect(svgOf(view.container)).toBe(glyph(<IconCodeOutlineRegular />))
+    // A color without an icon tints the folder.
+    view.rerender(<WorkspaceIcon appearance={{ color: 'red' }} expanded={false} emojiLabel={emojiLabel} />)
+    expect(svgOf(view.container)).toBe(glyph(<IconFolderCloseRegular />))
+    expect(view.container.firstElementChild?.getAttribute('data-accent')).toBe('red')
+  })
+
+  it('renders every curated glyph id', () => {
+    for (const id of WORKSPACE_ICON_IDS) {
+      const view = render(<WorkspaceIcon appearance={{ icon: `icon:${id}` }} expanded={false} emojiLabel={emojiLabel} />)
+      expect(view.container.querySelector('svg')).not.toBeNull()
+      view.unmount()
+    }
+  })
+
+  it('renders an emoji as a labelled image and sizes the glyphs it is asked to', () => {
+    render(<WorkspaceIcon appearance={{ icon: emoji('🎯') }} expanded emojiLabel={emojiLabel} />)
+    const image = screen.getByRole('img', { name: emojiLabel })
+    expect(image.textContent).toBe('🎯')
+    cleanup()
+    const sized = render(<WorkspaceIcon appearance={{ icon: 'icon:globe' }} expanded={false} size={20} emojiLabel={emojiLabel} />)
+    expect(sized.container.querySelector('svg')?.getAttribute('width')).toBe('20')
+  })
+
+  it('applies the configured default icon only to a Workspace without a chosen icon', () => {
+    const view = render(<WorkspaceIcon defaultIcon="icon:sparkle" expanded={false} emojiLabel={emojiLabel} />)
+    expect(svgOf(view.container)).toBe(glyph(<IconSparkleRegular />))
+    view.rerender(<WorkspaceIcon defaultIcon="icon:sparkle" appearance={{ icon: 'icon:code' }} expanded={false} emojiLabel={emojiLabel} />)
+    expect(svgOf(view.container)).toBe(glyph(<IconCodeOutlineRegular />))
+    // A default emoji renders as an emoji too; the folder default swaps open.
+    view.rerender(<WorkspaceIcon defaultIcon={emoji('🚀')} expanded={false} emojiLabel={emojiLabel} />)
+    expect(screen.getByRole('img', { name: emojiLabel }).textContent).toBe('🚀')
+    view.rerender(<WorkspaceIcon defaultIcon="icon:folder" expanded emojiLabel={emojiLabel} />)
+    expect(svgOf(view.container)).toBe(glyph(<IconFolderOpenRegular />))
+  })
+
+  it('marks an archived group icon so the stylesheet dims it', () => {
+    const view = render(<WorkspaceIcon appearance={{ color: 'green' }} archived expanded={false} emojiLabel={emojiLabel} />)
+    expect(view.container.firstElementChild?.hasAttribute('data-archived')).toBe(true)
+    view.rerender(<WorkspaceIcon appearance={{ color: 'green' }} expanded={false} emojiLabel={emojiLabel} />)
+    expect(view.container.firstElementChild?.hasAttribute('data-archived')).toBe(false)
+  })
+
+  it('a Workspace row renders its appearance and the configured default', () => {
+    const group: GroupNode = {
+      key: 'project', workspaceId: wid('project'), cwd: '/projects/project', createdAt: 0, label: 'Project',
+      sessionCount: 0, expanded: false, containsCurrent: false, archived: false,
+      appearance: { color: 'amber', icon: emoji('🎯') }, sessions: [],
+    }
+    const view = render(<ProjectRowItem group={group} onToggle={vi.fn()} onCreate={vi.fn()} t={t} />)
+    expect(screen.getByRole('img', { name: '工作区表情图标' }).textContent).toBe('🎯')
+    expect(screen.getByRole('img', { name: '工作区表情图标' }).parentElement?.getAttribute('data-accent')).toBe('amber')
+    view.rerender(<ProjectRowItem group={{ ...group, appearance: undefined }} defaultIcon="icon:code" onToggle={vi.fn()} onCreate={vi.fn()} t={t} />)
+    expect(svgOf(screen.getByRole('treeitem'))).toBe(glyph(<IconCodeOutlineRegular />))
+  })
 })

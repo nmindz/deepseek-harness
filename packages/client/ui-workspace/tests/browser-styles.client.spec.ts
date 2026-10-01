@@ -6,6 +6,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { WORKSPACE_COLORS } from '@deepseek-ai/dsh-api-workspace-controller/client'
 
 const css = readFileSync(fileURLToPath(new URL('../src/client/rows/WorkspaceBrowser.module.css', import.meta.url)), 'utf8')
 const rowsCss = readFileSync(fileURLToPath(new URL('../src/client/rows/Rows.module.css', import.meta.url)), 'utf8')
@@ -133,5 +134,28 @@ describe('WorkspaceBrowser.module.css list', () => {
     expect(declarations('.rail .sectionHeader')?.get('justify-content')).toBe('flex-start')
     expect(declarations('.rail .iconButton')?.get('width')).toBe('36px')
     expect(declarations('.rail .search')?.get('width')).toBe('36px')
+  })
+
+  it('gives every Workspace accent a light rule on the 500 step and a dark rule on the 400 step', () => {
+    expect(rowDeclarations('.workspaceIcon')?.get('color')).toBe('var(--dsh-workspace-accent, currentColor)')
+    for (const color of WORKSPACE_COLORS) {
+      expect(rowDeclarations(`.workspaceIcon[data-accent='${color}']`)?.get('--dsh-workspace-accent'))
+        .toBe(`var(--dsw-static-${color}-500)`)
+      expect(rowDeclarations(`body[data-ds-dark-theme] .workspaceIcon[data-accent='${color}']`)?.get('--dsh-workspace-accent'))
+        .toBe(`var(--dsw-static-${color}-400)`)
+    }
+    // An archived group's icon drops to the caption step like its title.
+    expect(rowDeclarations('.workspaceIcon[data-archived]')?.get('--dsh-workspace-accent')).toBe('var(--dsw-alias-label-caption)')
+    expect(rowDeclarations('.workspaceEmoji')?.get('font-size')).toBe('14px')
+    expect(rowDeclarations('.workspaceEmoji')?.get('line-height')).toBe('1')
+  })
+
+  it('lays the Change icon… dialog out at row size with 28px radio cells', () => {
+    expect(declarations('.appearancePreview')?.get('height')).toBe('34px')
+    expect(declarations('.appearanceGrid')?.get('grid-template-columns')).toBe('repeat(var(--dsh-appearance-grid-columns), 28px)')
+    expect(declarations('.appearanceChip')?.get('width')).toBe('28px')
+    expect(declarations('.appearanceCell')?.get('height')).toBe('28px')
+    expect(declarations(".appearanceChip[aria-checked='true']")?.get('background')).toBe('var(--dsw-alias-interactive-bg-active)')
+    expect(declarations(".appearanceCell[aria-checked='true']")?.get('background')).toBe('var(--dsw-alias-interactive-bg-active)')
   })
 })

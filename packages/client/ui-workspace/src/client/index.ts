@@ -20,9 +20,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { RemoteHostFacts } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type {
-  IWorkspaces, SessionActivity, WorkspaceArchiveError, WorkspaceId, WorkspaceSnapshot,
+  IWorkspaces, SessionActivity, WorkspaceArchiveError, WorkspaceIconRef, WorkspaceId, WorkspaceSnapshot,
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import { isWorkspaceIconRef } from '@deepseek-ai/dsh-api-workspace-controller/appearance'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import z from '@deepseek-ai/schemastery'
 import type { HostObservable, SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 // Type-only: pulls the Controller service merges.
@@ -90,6 +92,27 @@ declare module '@deepseek-ai/dsh-api-session-controller/client' {
 /** Dictionary namespace owned by this plugin. */
 const NS = 'workspace'
 
+/** Workspace browser configuration (cordis.yml plugin `config`). */
+export interface Config {
+  /**
+   * Icon every Workspace without a chosen icon renders, as an icon reference
+   * (`icon:<curated id>` or `emoji:<one grapheme>`); absent means the folder.
+   */
+  defaultIcon?: WorkspaceIconRef
+}
+
+/**
+ * Validated Workspace browser configuration; a malformed `defaultIcon` fails
+ * the load with a TypeError naming the field (the icon grammar is not a
+ * pattern, so the check runs as a transform over the string).
+ */
+export const Config: z<Config> = z.object({
+  defaultIcon: z.transform(z.string(), (value): WorkspaceIconRef => {
+    if (isWorkspaceIconRef(value)) return value
+    throw new TypeError(`defaultIcon: expected icon:<curated id> or emoji:<one grapheme>, got '${value}'`)
+  }),
+})
+
 /**
  * Required services (cordis fiber inject). The target slots are declared by
  * the ui-sidebar / ui-conversation applies, whose activation order relative
@@ -107,8 +130,10 @@ export const inject = [
  * ledger. Inject factories return plain callbacks; data reads use the
  * framework's global hooks.
  * @param ctx - client root context.
+ * @param config - validated plugin configuration.
  */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: Config = Config({})): void {
+  const defaultIcon = config.defaultIcon
   const sessions = ctx.get('sessions') as ISessions
   const workspaces = ctx.get('workspaces') as IWorkspaces
   // One viewing-store instance, created here as ui-layout does for its layout
@@ -325,6 +350,8 @@ export function apply(ctx: Context): void {
     },
     renameWorkspace: async (workspaceId, title) => { await workspaces.rename(workspaceId, title) },
     deleteWorkspace: async (workspaceId) => { await workspaces.delete(workspaceId) },
+    setWorkspaceAppearance: async (workspaceId, appearance) => { await workspaces.setAppearance(workspaceId, appearance) },
+    defaultIcon,
     archiveWorkspace,
     unarchiveWorkspace,
     insertWorkspaceBefore: async (workspaceId, beforeWorkspaceId) => {
@@ -341,6 +368,7 @@ export function apply(ctx: Context): void {
   })
   const pickerInjected = (): WorkspacePickerInjected => ({
     createWorkspace: input => workspaces.create(input),
+    defaultIcon,
     hooks: { directoryFlow: pickerFlowSource },
   })
   // Each registration declares its owned children in the same call; slot
