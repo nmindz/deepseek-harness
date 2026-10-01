@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-09-30-archive-workspace-derived-session-archive.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-30-archive-workspace-derived-session-archive.md
+/agent-note-archiving-a-workspace-archives-its-sessions-by-derivation:
+  en: 7da95c47024a693e
+  zh: 460eb3dd45498ee4
+/agent-note-archiving-a-workspace-archives-its-sessions-by-derivation/problem:
+  en: fcbc7f135820fd91
+  zh: d7098ba4c74b2c7d
+/agent-note-archiving-a-workspace-archives-its-sessions-by-derivation/decision:
+  en: ba66908814f471b9
+  zh: 339faa2d027d662d
+/agent-note-archiving-a-workspace-archives-its-sessions-by-derivation/alternatives-considered:
+  en: 85d394517298ba10
+  zh: 804f718d75c08228
+/agent-note-archiving-a-workspace-archives-its-sessions-by-derivation/consequences:
+  en: 0c500246c4971732
+  zh: a2268a75af0ba32b

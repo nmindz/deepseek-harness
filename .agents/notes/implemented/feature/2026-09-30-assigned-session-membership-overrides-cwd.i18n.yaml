@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-09-30-assigned-session-membership-overrides-cwd.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-30-assigned-session-membership-overrides-cwd.md
+/agent-note-an-explicit-session-assignment-overrides-the-directory-match:
+  en: bfdae4e353494476
+  zh: 6e2c346697c664ea
+/agent-note-an-explicit-session-assignment-overrides-the-directory-match/problem:
+  en: 03f77c7e1e9bbef0
+  zh: 6f6b10f2ad5b0133
+/agent-note-an-explicit-session-assignment-overrides-the-directory-match/decision:
+  en: eb7f72dab7964908
+  zh: 36dc5fca5f460e6f
+/agent-note-an-explicit-session-assignment-overrides-the-directory-match/alternatives-considered:
+  en: 28096b49bb7d0d26
+  zh: 6291eba0a277c796
+/agent-note-an-explicit-session-assignment-overrides-the-directory-match/consequences:
+  en: 0f79621b17ca9e2e
+  zh: 000e11783842767d
