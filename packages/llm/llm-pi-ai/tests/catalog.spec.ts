@@ -11,6 +11,7 @@ import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream'
 import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript'
 import type { Api, Model, OpenAICompletionsCompat, Provider } from '@earendil-works/pi-ai'
+import { catalogModels } from '../src/catalog.ts'
 import { resolveProfiles } from '../src/config.ts'
 import { createModels, createProvider, getSupportedThinkingLevels } from '../src/models.ts'
 import { buildProvider, supportedProtocols } from '../src/provider.ts'
@@ -1250,5 +1251,61 @@ describe('configurable-provider directory', () => {
       settingsPath: ['providers', 'openai-codex'],
       declared: false,
     })
+  })
+})
+
+describe('provisional catalog models', () => {
+  it('serves an id the pinned catalog lacks with its twin’s capacities and its generation’s dispatch flags', () => {
+    const catalog = catalogModels('anthropic')
+    const inherited = catalog.get('claude-sonnet-5')
+    const sibling = catalog.get('claude-opus-5-5')
+    const provisional = catalog.get('claude-sonnet-5-5')
+    if (inherited === undefined) throw new Error('the installed catalog ships no claude-sonnet-5')
+    if (sibling === undefined) throw new Error('the installed catalog ships no claude-opus-5-5')
+    if (provisional === undefined) throw new Error('the catalog omits the provisional claude-sonnet-5-5')
+
+    // Capacities and pricing come from claude-sonnet-5; efforts and compat
+    // flags are the ones pi-ai 1.0.4 publishes for the id, which the pinned
+    // claude-opus-5-5 already carries.
+    expect(provisional.id).toBe('claude-sonnet-5-5')
+    expect(provisional.name).toBe('Claude Sonnet 5.5')
+    expect(provisional.reasoning).toBe(true)
+    expect(provisional.cost).toEqual(inherited.cost)
+    expect(provisional.thinkingLevelMap).toEqual(sibling.thinkingLevelMap)
+    expect(provisional.compat).toEqual(sibling.compat)
+    const { id: _id, name: _name, thinkingLevelMap: _map, compat: _compat, ...rest } = provisional
+    const {
+      id: _inheritedId, name: _inheritedName, thinkingLevelMap: _inheritedMap, compat: _inheritedCompat, ...inheritedRest
+    } = inherited
+    expect(rest).toEqual(inheritedRest)
+  })
+
+  it('dispatches without temperature and with mid-conversation changes for a profile that lists the id alone', () => {
+    const route = resolveProfiles({ anthropic: { apiKeyEnv: KEY_ENV, models: [{ id: 'claude-sonnet-5-5' }] } }).get('anthropic')
+    const model = route?.piProvider?.getModels().find(entry => entry.id === 'claude-sonnet-5-5')
+
+    expect(model?.compat).toEqual({
+      forceAdaptiveThinking: true,
+      supportsMidConvoEffort: true,
+      supportsMidConvoSystemMessages: true,
+      supportsMidConvoToolChanges: true,
+      supportsStrictTools: true,
+      supportsTemperature: false,
+    })
+  })
+
+  it('resolves low-through-max efforts and the long context for a profile that lists the id alone', async () => {
+    const inherited = catalogModels('anthropic').get('claude-sonnet-5')
+    if (inherited === undefined) throw new Error('the installed catalog ships no claude-sonnet-5')
+    const ctx = await harness({
+      providers: { anthropic: { apiKeyEnv: KEY_ENV, models: [{ id: 'claude-sonnet-5-5' }] } },
+    })
+
+    // An id the installed catalog does not describe resolves as a
+    // non-reasoning model on the route's default capacities; inheritance is
+    // what carries the efforts and the long context here.
+    const info = await ctx.llm.resolveModelInfo('anthropic', 'claude-sonnet-5-5')
+    expect(info.reasoning?.efforts.map(effort => effort.id)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(info.context).toEqual({ contextWindow: inherited.contextWindow })
   })
 })

@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 import { sandboxDefineTool } from '../src/guard.ts'
 import { syntaxErrorContext } from '../src/sandbox.ts'
@@ -38,6 +39,33 @@ describe('dynamic tool declaration boundary', () => {
       execute: async () => 'ok',
     })
     expect(() => definition.output.render({}, 'ok')).toThrow(/output\.render returned \["x+…/)
+  })
+
+  it('accepts a sandbox-realm declaration under WebKit native constructor formatting', () => {
+    const foreign = runInNewContext(`({
+      Object,
+      Array,
+      options: {
+        name: 'webkit',
+        description: 'webkit',
+        parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+        output: { schema: { type: 'string', enum: ['ok'] } },
+      },
+    })`) as { Object: ObjectConstructor; Array: ArrayConstructor; options: Record<string, unknown> }
+    const original = Object.getOwnPropertyDescriptor(Function.prototype, 'toString')!.value as (this: unknown) => string
+    const toString = vi.spyOn(Function.prototype, 'toString').mockImplementation(function (this: unknown) {
+      if (this === Object || this === foreign.Object) return 'function Object() {\n    [native code]\n}'
+      if (this === Array || this === foreign.Array) return 'function Array() {\n    [native code]\n}'
+      return original.call(this)
+    })
+    try {
+      const output = foreign.options.output as Record<string, unknown>
+      output.render = () => []
+      foreign.options.execute = async () => 'ok'
+      expect(sandboxDefineTool(foreign.options).name).toBe('webkit')
+    } finally {
+      toString.mockRestore()
+    }
   })
 })
 

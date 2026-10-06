@@ -230,6 +230,7 @@ pi-ai 事件变成 harness 的推理、文本、工具调用、用量与 finish 
 - **提供方 HTTP 状态不可用**——pi-ai 错误事件不跨提供方暴露稳定 HTTP 状态。
 - **重试策略由提供方自有，而非 SDK 重试**——pi-ai SDK 重试保持禁用，因此持久 agent（智能体）步骤与 `llm/retry` 事件拥有每个可见尝试，直接 `ctx.llm.stream()` 调用仍是单次尝试。
 - **流式工具调用参数只在调用结束时解析一次**——安装的 pi-ai 带有 [`patches/@earendil-works__pi-ai@0.87.1.patch`](../../../patches/@earendil-works__pi-ai@0.87.1.patch)，它移除了每个流适配器中对整段累计参数 JSON 的逐 delta 重新解析（上游 [earendil-works/pi#9265](https://github.com/earendil-works/pi/issues/9265)）；未打补丁时，数 MB 的参数流会在事件循环上消耗 O(n²) CPU，并使进程内所有会话停滞。在 `toolcall_end` 之前，pi-ai partial 的工具调用 `arguments` 保持为 `{}`；本适配器只读取 delta 字符串与最终参数。每次升级 pi-ai 时都要重新应用或撤销该补丁。
+- **`claude-sonnet-5-5` 是临时目录条目**——Anthropic 在固定的 pi-ai 目录收录之前就已提供该 id，因此 `catalogModels` 把已安装的 `claude-sonnet-5` 条目复制到该 id 之下，只替换 `thinkingLevelMap` 与 `compat`：Anthropic 公布的两者容量与计价相同，但 `claude-sonnet-5-5` 只提供 `low` 至 `max` 的推理强度，无法关闭推理，拒绝 `temperature`，并接受在对话中途更改推理强度、系统消息与工具，与 pi-ai 1.0.4 中该 id 的条目及固定版本的 `claude-opus-5-5` 条目记录一致。路由 profile 没有 `cost` 字段，也无法设置这些 compat 标志，因此只有该条目才能让模型获得其计价与调度行为。一旦某个 pi-ai 版本发布该 id，已安装目录即优先；届时删除该条目。
 
 <a id="dev-note"></a>
 ### 开发备注

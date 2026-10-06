@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-09-06-engine-agnostic-native-constructor-test.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-09-06-engine-agnostic-native-constructor-test.md
+/agent-note-engine-agnostic-native-constructor-test:
+  en: c5964758e7a8ba99
+  zh: 86250441b5a0d9fb
+/agent-note-engine-agnostic-native-constructor-test/problem:
+  en: 1c398a207092afae
+  zh: 5fe51e1e01455ee7
+/agent-note-engine-agnostic-native-constructor-test/decision:
+  en: 9a60bfaf44ab8cd2
+  zh: 16a4fa34c275d350
+/agent-note-engine-agnostic-native-constructor-test/alternatives-considered:
+  en: d27d57af819dce7d
+  zh: 4fc17417168757d4
+/agent-note-engine-agnostic-native-constructor-test/consequences:
+  en: 5cb956dfb73acf42
+  zh: a61490fa3b6c0b6f

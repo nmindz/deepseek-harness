@@ -34,6 +34,16 @@ const intrinsicSetAdd = Reflect.get(Set.prototype, 'add') as IntrinsicCallable
 const intrinsicSetDelete = Reflect.get(Set.prototype, 'delete') as IntrinsicCallable
 const intrinsicSetHas = Reflect.get(Set.prototype, 'has') as IntrinsicCallable
 
+/**
+ * This realm's own rendering of each native constructor, captured before model
+ * code runs. Engines print the `[native code]` body with different whitespace,
+ * so the local intrinsic is the comparand rather than a V8-shaped literal.
+ */
+const NATIVE_CONSTRUCTOR_SOURCE: Readonly<Record<'Array' | 'Object', string>> = {
+  Array: intrinsicReflectApply(intrinsicFunctionToString, Array, []) as string,
+  Object: intrinsicReflectApply(intrinsicFunctionToString, Object, []) as string,
+}
+
 /** Build a data descriptor that cannot inherit model-defined accessor fields. */
 function dataDescriptor(value: unknown): PropertyDescriptor {
   const descriptor = intrinsicObjectCreate(null) as PropertyDescriptor
@@ -87,7 +97,8 @@ function hasIntrinsicConstructor(prototype: object, name: 'Array' | 'Object'): b
   try {
     return constructor.name === name
       && constructor.prototype === prototype
-      && intrinsicReflectApply(intrinsicFunctionToString, constructor, []) === `function ${name}() { [native code] }`
+      && intrinsicReflectApply(intrinsicFunctionToString, constructor, [])
+        === NATIVE_CONSTRUCTOR_SOURCE[name]
   } catch {
     return false
   }
