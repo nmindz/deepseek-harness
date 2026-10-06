@@ -1255,23 +1255,43 @@ describe('configurable-provider directory', () => {
 })
 
 describe('provisional catalog models', () => {
-  it('serves an id the pinned catalog lacks with its inherited twin’s capabilities', () => {
+  it('serves an id the pinned catalog lacks with its twin’s capacities and its generation’s dispatch flags', () => {
     const catalog = catalogModels('anthropic')
     const inherited = catalog.get('claude-sonnet-5')
+    const sibling = catalog.get('claude-opus-5-5')
     const provisional = catalog.get('claude-sonnet-5-5')
     if (inherited === undefined) throw new Error('the installed catalog ships no claude-sonnet-5')
+    if (sibling === undefined) throw new Error('the installed catalog ships no claude-opus-5-5')
     if (provisional === undefined) throw new Error('the catalog omits the provisional claude-sonnet-5-5')
 
-    // Identity and the effort spellings are the model's own; a route profile
-    // can declare neither cost nor a withheld compat field, so both must
-    // arrive by inheritance.
+    // Capacities and pricing come from claude-sonnet-5; efforts and compat
+    // flags are the ones pi-ai 1.0.4 publishes for the id, which the pinned
+    // claude-opus-5-5 already carries.
     expect(provisional.id).toBe('claude-sonnet-5-5')
     expect(provisional.name).toBe('Claude Sonnet 5.5')
+    expect(provisional.reasoning).toBe(true)
     expect(provisional.cost).toEqual(inherited.cost)
-    expect(provisional.compat).toEqual(inherited.compat)
-    const { id: _id, name: _name, thinkingLevelMap: _map, ...rest } = provisional
-    const { id: _inheritedId, name: _inheritedName, thinkingLevelMap: _inheritedMap, ...inheritedRest } = inherited
+    expect(provisional.thinkingLevelMap).toEqual(sibling.thinkingLevelMap)
+    expect(provisional.compat).toEqual(sibling.compat)
+    const { id: _id, name: _name, thinkingLevelMap: _map, compat: _compat, ...rest } = provisional
+    const {
+      id: _inheritedId, name: _inheritedName, thinkingLevelMap: _inheritedMap, compat: _inheritedCompat, ...inheritedRest
+    } = inherited
     expect(rest).toEqual(inheritedRest)
+  })
+
+  it('dispatches without temperature and with mid-conversation changes for a profile that lists the id alone', () => {
+    const route = resolveProfiles({ anthropic: { apiKeyEnv: KEY_ENV, models: [{ id: 'claude-sonnet-5-5' }] } }).get('anthropic')
+    const model = route?.piProvider?.getModels().find(entry => entry.id === 'claude-sonnet-5-5')
+
+    expect(model?.compat).toEqual({
+      forceAdaptiveThinking: true,
+      supportsMidConvoEffort: true,
+      supportsMidConvoSystemMessages: true,
+      supportsMidConvoToolChanges: true,
+      supportsStrictTools: true,
+      supportsTemperature: false,
+    })
   })
 
   it('resolves low-through-max efforts and the long context for a profile that lists the id alone', async () => {

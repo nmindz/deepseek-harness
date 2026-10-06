@@ -203,18 +203,19 @@ interface ProvisionalModel {
   name: string
   /** Effort spellings the provider publishes for this id; they replace the inherited map. */
   thinkingLevelMap: NonNullable<Model<Api>['thinkingLevelMap']>
+  /** Dispatch compat flags the provider publishes for this id; they replace the inherited flags. */
+  compat: NonNullable<Model<Api>['compat']>
 }
 
 /**
  * Ids a provider serves ahead of the pinned pi-ai catalog, each copying one
- * installed entry except its effort spellings, which every entry declares.
- * An id qualifies only while the provider publishes it with the capacities
- * and pricing of the entry it inherits, because those are copied
- * unconditionally: a route profile declares neither `cost` nor a
- * withheld compat field, so inheritance is the only way these models reach
- * the pricing and dispatch behavior their released twin already has. An id
- * the installed catalog ships wins, so a pi-ai upgrade retires its entry
- * without a code change.
+ * installed entry except its effort spellings and compat flags, which every
+ * entry declares. An id qualifies only while the provider publishes it with
+ * the capacities and pricing of the entry it inherits, because those are
+ * copied unconditionally: a route profile declares neither `cost` nor a
+ * withheld compat field, so the entry is the only way these models reach
+ * their pricing and dispatch behavior. An id the installed catalog ships
+ * wins, so a pi-ai upgrade retires its entry without a code change.
  *
  * TODO: drop an entry once a pi-ai release ships its model.
  */
@@ -223,9 +224,19 @@ const PROVISIONAL_MODELS: Readonly<Record<string, readonly ProvisionalModel[]>> 
     id: 'claude-sonnet-5-5',
     inherits: 'claude-sonnet-5',
     name: 'Claude Sonnet 5.5',
-    // Anthropic offers low through max with no way to turn reasoning off;
-    // the pinned catalog spells claude-opus-5-5 the same way.
+    // Efforts and compat match pi-ai 1.0.4's claude-sonnet-5-5 entry, which
+    // the pinned catalog's claude-opus-5-5 already spells the same way:
+    // low through max with no way to turn reasoning off, no temperature,
+    // and effort, system-message, and tool changes mid-conversation.
     thinkingLevelMap: { off: null, minimal: null, low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
+    compat: {
+      forceAdaptiveThinking: true,
+      supportsMidConvoEffort: true,
+      supportsMidConvoSystemMessages: true,
+      supportsMidConvoToolChanges: true,
+      supportsStrictTools: true,
+      supportsTemperature: false,
+    },
   }],
 }
 
@@ -257,6 +268,7 @@ export function catalogModels(provider: string): Map<string, Model<Api>> {
       id: provisional.id,
       name: provisional.name,
       thinkingLevelMap: provisional.thinkingLevelMap,
+      compat: provisional.compat,
     })
   }
   return catalog
